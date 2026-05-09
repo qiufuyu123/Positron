@@ -1,0 +1,6 @@
+[submodule "third_party/minhook"]
+	path = third_party/minhook
+	url = https://github.com/TsudaKageyu/minhook.git
+[submodule "third_party/replxx"]
+	path = third_party/replxx
+	url = https://github.com/AmokHuginnsson/replxx.git
