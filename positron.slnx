@@ -1,8 +1,7 @@
 <Solution>
   <Configurations>
     <Platform Name="x64" />
-    <Platform Name="x86" />
   </Configurations>
-  <Project Path="positron-test/positron-test.vcxproj" />
-  <Project Path="positron/positron.vcxproj" />
+  <Project Path="host/host.vcxproj" />
+  <Project Path="payload/payload.vcxproj" />
 </Solution>
