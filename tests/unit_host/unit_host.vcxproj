@@ -29,14 +29,16 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(SolutionDir)shared;$(SolutionDir)third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)shared;$(SolutionDir)third_party;$(SolutionDir)payload\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation></Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="test_main.cpp" />
     <ClCompile Include="test_wire.cpp" />
+    <ClCompile Include="test_pe_resolver.cpp" />
     <ClCompile Include="..\..\shared\wire\wire.cpp" />
+    <ClCompile Include="..\..\payload\src\pe_resolver\pe_resolver.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
