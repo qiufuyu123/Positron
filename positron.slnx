@@ -4,4 +4,5 @@
   </Configurations>
   <Project Path="host/host.vcxproj" />
   <Project Path="payload/payload.vcxproj" />
+  <Project Path="tests/unit_host/unit_host.vcxproj" />
 </Solution>
