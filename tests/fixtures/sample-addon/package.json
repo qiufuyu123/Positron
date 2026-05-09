@@ -1,0 +1,12 @@
+{
+  "name": "sample-addon",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "node-gyp rebuild"
+  },
+  "devDependencies": {
+    "node-addon-api": "^8.0.0",
+    "node-gyp": "^12.3.0"
+  }
+}
