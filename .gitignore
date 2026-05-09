@@ -1,0 +1,63 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+
+# Build outputs
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+Win32/
+ARM64/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Intermediates
+*.obj
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.lib
+*.tlog
+*.lastbuildstate
+*.unsuccessfulbuild
+*.cache
+*.ipch
+*.aps
+*.tlb
+*.tli
+*.tlh
+
+# NuGet
+packages/
+*.nupkg
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+
+# vcpkg local
+vcpkg_installed/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# Test fixture node_modules
+tests/fixtures/**/node_modules/
