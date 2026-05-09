@@ -17,6 +17,7 @@ struct Impl {
     std::atomic<bool> running{false};
     std::atomic<bool> connected{false};
     Handler handler;
+    Greeter greeter;
     std::mutex write_mu;
 
     std::wstring pipe_name(uint32_t pid) {
@@ -45,6 +46,28 @@ struct Impl {
         if (!ok) { log::error("ConnectNamedPipe failed"); return; }
         connected = true;
         log::info("pipe client connected");
+
+        // Send the connection greeting (e.g. HELLO) from the same thread that
+        // owns the pipe handle. WriteFile-from-another-thread on a synchronous
+        // pipe handle does not interact correctly with a concurrent ReadFile
+        // on the same thread that called ConnectNamedPipe, so we serialise the
+        // greeting here before entering the read loop.
+        if (greeter) {
+            try {
+                auto greeting = greeter();
+                auto bytes = wire::frame_pack(greeting);
+                std::lock_guard lk(write_mu);
+                DWORD wrote = 0;
+                BOOL gok = ::WriteFile(pipe, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr);
+                if (!gok) {
+                    log::error("greeter WriteFile failed: " + std::to_string(::GetLastError()));
+                } else {
+                    log::info("greeter sent " + std::to_string(wrote) + " bytes");
+                }
+            } catch (const std::exception& e) {
+                log::error(std::string("greeter threw: ") + e.what());
+            }
+        }
 
         std::vector<uint8_t> buf;
         buf.reserve(64*1024);
@@ -78,7 +101,9 @@ struct Impl {
         auto bytes = wire::frame_pack(j);
         std::lock_guard lk(write_mu);
         DWORD wrote = 0;
-        ::WriteFile(pipe, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr);
+        if (!::WriteFile(pipe, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr)) {
+            log::error("push WriteFile failed: " + std::to_string(::GetLastError()));
+        }
     }
 
     void stop() {
@@ -95,6 +120,7 @@ Server& Server::instance() {
 
 static Impl g_impl;
 
+void Server::set_greeter(Greeter g) { g_impl.greeter = std::move(g); }
 void Server::start(uint32_t pid, Handler h) { g_impl.start(pid, std::move(h)); }
 void Server::push(const Json& j) { g_impl.push(j); }
 void Server::stop() { g_impl.stop(); }

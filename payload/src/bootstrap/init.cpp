@@ -11,7 +11,8 @@
 namespace positron::bootstrap {
 
 unsigned __stdcall init_thread_main(void*) {
-    log::init(::GetCurrentProcessId());
+    uint32_t pid = ::GetCurrentProcessId();
+    log::init(pid);
     log::info("payload init starting");
 
     auto found = pe::find_exports_with("napi_register_module_v1");
@@ -22,21 +23,19 @@ unsigned __stdcall init_thread_main(void*) {
         }
     }
 
-    ipc::Server::instance().start(::GetCurrentProcessId(), [](const wire::Json& cmd) {
-        log::info(std::string("recv cmd: ") + cmd.dump());
-    });
-
-    for (int i = 0; i < 600 && !ipc::Server::instance().is_connected(); ++i) {
-        ::Sleep(50);
-    }
-    if (ipc::Server::instance().is_connected()) {
+    ipc::Server::instance().set_greeter([symbols, pid]() -> wire::Json {
         wire::Hello h;
         h.electron_version = "";
         h.target_type = "";
         h.napi_symbols_present = symbols;
-        h.pid = ::GetCurrentProcessId();
-        ipc::Server::instance().push(wire::encode_hello(h));
-    }
+        h.pid = pid;
+        return wire::encode_hello(h);
+    });
+
+    ipc::Server::instance().start(pid, [](const wire::Json& cmd) {
+        log::info(std::string("recv cmd: ") + cmd.dump());
+    });
+    log::info("ipc server started");
     return 0;
 }
 
