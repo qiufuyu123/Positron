@@ -85,6 +85,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="src\bootstrap\init.cpp" />
+    <ClCompile Include="src\logging\log.cpp" />
     <ClCompile Include="src\pe_resolver\pe_resolver.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
