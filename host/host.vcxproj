@@ -76,6 +76,7 @@
   <ItemGroup>
     <ClCompile Include="host_main.cpp" />
     <ClCompile Include="src\process_enum\process_enum.cpp" />
+    <ClCompile Include="src\injector\injector.cpp" />
     <ClCompile Include="..\third_party\replxx\src\ConvertUTF.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level1</WarningLevel>
