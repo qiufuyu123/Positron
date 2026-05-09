@@ -91,6 +91,8 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="src\ipc_server\ipc_server.cpp" />
+    <ClCompile Include="src\hook_engine\hook_engine.cpp" />
+    <ClCompile Include="src\napi_bridge\napi_bridge.cpp" />
     <ClCompile Include="..\shared\wire\wire.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>

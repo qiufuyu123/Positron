@@ -3,6 +3,8 @@
 #include "logging/log.h"
 #include "pe_resolver/pe_resolver.h"
 #include "ipc_server/ipc_server.h"
+#include "hook_engine/hook_engine.h"
+#include "napi_bridge/napi_bridge.h"
 #include "wire/wire.h"
 #include <Windows.h>
 #include <vector>
@@ -15,13 +17,12 @@ unsigned __stdcall init_thread_main(void*) {
     log::init(pid);
     log::info("payload init starting");
 
-    auto found = pe::find_exports_with("napi_register_module_v1");
-    std::vector<std::string> symbols;
-    if (found) {
-        for (auto& kv : found->table.rva_by_name) {
-            if (kv.first.rfind("napi_", 0) == 0) symbols.push_back(kv.first);
-        }
-    }
+    hook::initialize();
+    bool napi_ok = napi::Bridge::instance().initialize();
+
+    std::vector<std::string> symbols = napi_ok
+        ? napi::Bridge::instance().present_symbols
+        : std::vector<std::string>{};
 
     ipc::Server::instance().set_greeter([symbols, pid]() -> wire::Json {
         wire::Hello h;
