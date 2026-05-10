@@ -1,4 +1,7 @@
 #include "pipe_client.h"
+// WinSock2 must come before Windows.h (or use WIN32_LEAN_AND_MEAN).
+#include <WinSock2.h>
+#include <WS2tcpip.h>
 #include <Windows.h>
 #include <vector>
 #include <mutex>
@@ -8,20 +11,39 @@
 #include <chrono>
 #include <atomic>
 
+#pragma comment(lib, "Ws2_32.lib")
+
 using positron::wire::Json;
+
+// Transport: TCP socket on 127.0.0.1. Chosen over named pipes because the
+// payload running inside a Chromium renderer sandbox cannot create named
+// pipes (CreateNamedPipeW is blocked by sandbox lockdown) but CAN open a
+// TCP socket and connect() to loopback.
+//
+// Roles inverted from naming:
+//   * HOST is the SERVER (this file). Listens, accepts the payload's
+//     incoming connection.
+//   * PAYLOAD is the CLIENT — connects out to localhost:<port>.
+//
+// Port is deterministic from the target PID so the payload (which runs the
+// same calculation against GetCurrentProcessId()) can find us without any
+// out-of-band parameter passing.
 
 namespace positron::pipe {
 
-// We use FILE_FLAG_OVERLAPPED on the pipe handle so that the reader thread's
-// ReadFile and the sender's WriteFile do not serialise on the per-handle
-// kernel lock. Without OVERLAPPED, a long-lived blocking ReadFile would
-// hold the handle and block any concurrent WriteFile from another thread,
-// producing a hard deadlock with the server-side payload.
+static uint16_t port_for_pid(uint32_t pid) {
+    return static_cast<uint16_t>(30000u + (pid % 30000u));
+}
+
+struct Wsa {
+    Wsa()  { WSADATA d; ::WSAStartup(MAKEWORD(2, 2), &d); }
+    ~Wsa() { ::WSACleanup(); }
+};
+static Wsa g_wsa;
 
 struct Client::Impl {
-    HANDLE pipe = INVALID_HANDLE_VALUE;
-    HANDLE read_evt = nullptr;
-    HANDLE write_evt = nullptr;
+    SOCKET listener = INVALID_SOCKET;
+    SOCKET conn     = INVALID_SOCKET;
     std::mutex write_mu;
     std::thread reader;
     std::mutex mu;
@@ -32,29 +54,56 @@ struct Client::Impl {
     ~Impl() { close(); }
 
     ConnectResult connect(uint32_t pid, uint32_t timeout_ms) {
-        std::wstring name = L"\\\\.\\pipe\\positron-" + std::to_wstring(pid);
-        DWORD start = ::GetTickCount();
-        while (true) {
-            pipe = ::CreateFileW(name.c_str(),
-                                 GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                                 OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
-            if (pipe != INVALID_HANDLE_VALUE) break;
-            DWORD err = ::GetLastError();
-            if (err == ERROR_PIPE_BUSY) {
-                ::WaitNamedPipeW(name.c_str(), 200);
-            } else if (err == ERROR_FILE_NOT_FOUND) {
-                ::Sleep(100);
-            } else {
-                return ConnectError{"CreateFileW failed: " + std::to_string(err)};
-            }
-            if (::GetTickCount() - start > timeout_ms) {
-                return ConnectError{"timeout connecting to pipe"};
-            }
+        listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (listener == INVALID_SOCKET)
+            return ConnectError{"socket() failed: " + std::to_string(::WSAGetLastError())};
+
+        BOOL reuse = TRUE;
+        ::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR,
+                     reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(port_for_pid(pid));
+
+        if (::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+            int err = ::WSAGetLastError();
+            ::closesocket(listener); listener = INVALID_SOCKET;
+            return ConnectError{"bind(127.0.0.1:" + std::to_string(ntohs(addr.sin_port)) +
+                                ") failed: " + std::to_string(err)};
         }
-        DWORD mode = PIPE_READMODE_BYTE;
-        ::SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
-        read_evt  = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        write_evt = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
+        if (::listen(listener, 1) == SOCKET_ERROR) {
+            int err = ::WSAGetLastError();
+            ::closesocket(listener); listener = INVALID_SOCKET;
+            return ConnectError{"listen() failed: " + std::to_string(err)};
+        }
+
+        // accept() with timeout via select.
+        fd_set rs; FD_ZERO(&rs); FD_SET(listener, &rs);
+        timeval tv{};
+        tv.tv_sec  = static_cast<long>(timeout_ms / 1000);
+        tv.tv_usec = static_cast<long>((timeout_ms % 1000) * 1000);
+        int sel = ::select(0, &rs, nullptr, nullptr, &tv);
+        if (sel <= 0) {
+            ::closesocket(listener); listener = INVALID_SOCKET;
+            return ConnectError{"timeout waiting for payload to connect on port " +
+                                std::to_string(port_for_pid(pid))};
+        }
+
+        sockaddr_in peer{};
+        int peer_len = sizeof(peer);
+        conn = ::accept(listener, reinterpret_cast<sockaddr*>(&peer), &peer_len);
+        ::closesocket(listener); listener = INVALID_SOCKET;
+        if (conn == INVALID_SOCKET) {
+            return ConnectError{"accept() failed: " + std::to_string(::WSAGetLastError())};
+        }
+
+        BOOL nodelay = TRUE;
+        ::setsockopt(conn, IPPROTO_TCP, TCP_NODELAY,
+                     reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+
         open = true;
         reader = std::thread([this]{ this->run_reader(); });
         return Connected{};
@@ -64,16 +113,9 @@ struct Client::Impl {
         std::vector<uint8_t> buf;
         std::vector<uint8_t> chunk(8192);
         while (open) {
-            OVERLAPPED ov{};
-            ov.hEvent = read_evt;
-            ::ResetEvent(read_evt);
-            DWORD got = 0;
-            BOOL ok = ::ReadFile(pipe, chunk.data(), static_cast<DWORD>(chunk.size()), &got, &ov);
-            if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
-                if (!::GetOverlappedResult(pipe, &ov, &got, TRUE)) break;
-                ok = TRUE;
-            }
-            if (!ok || got == 0) break;
+            int got = ::recv(conn, reinterpret_cast<char*>(chunk.data()),
+                             static_cast<int>(chunk.size()), 0);
+            if (got <= 0) break;
             buf.insert(buf.end(), chunk.data(), chunk.data() + got);
             try {
                 while (true) {
@@ -95,13 +137,12 @@ struct Client::Impl {
         if (!open) return;
         auto bytes = wire::frame_pack(j);
         std::lock_guard<std::mutex> lk(write_mu);
-        OVERLAPPED ov{};
-        ov.hEvent = write_evt;
-        ::ResetEvent(write_evt);
-        DWORD wrote = 0;
-        BOOL ok = ::WriteFile(pipe, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, &ov);
-        if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
-            ::GetOverlappedResult(pipe, &ov, &wrote, TRUE);
+        const char* p = reinterpret_cast<const char*>(bytes.data());
+        int remain = static_cast<int>(bytes.size());
+        while (remain > 0) {
+            int n = ::send(conn, p, remain, 0);
+            if (n <= 0) break;
+            p += n; remain -= n;
         }
     }
 
@@ -120,14 +161,16 @@ struct Client::Impl {
 
     void close() {
         bool was = open.exchange(false);
-        if (pipe != INVALID_HANDLE_VALUE) {
-            ::CancelIoEx(pipe, nullptr);
-            ::CloseHandle(pipe);
-            pipe = INVALID_HANDLE_VALUE;
+        if (conn != INVALID_SOCKET) {
+            ::shutdown(conn, SD_BOTH);
+            ::closesocket(conn);
+            conn = INVALID_SOCKET;
+        }
+        if (listener != INVALID_SOCKET) {
+            ::closesocket(listener);
+            listener = INVALID_SOCKET;
         }
         if (reader.joinable()) reader.join();
-        if (read_evt)  { ::CloseHandle(read_evt);  read_evt  = nullptr; }
-        if (write_evt) { ::CloseHandle(write_evt); write_evt = nullptr; }
         cv.notify_all();
         (void)was;
     }

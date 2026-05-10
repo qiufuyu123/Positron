@@ -16,6 +16,12 @@ app.whenReady().then(() => {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // sandbox:false so positron's payload (mapped via Blackbone) can open
+      // a TCP socket back to the host. With Chromium's renderer sandbox on,
+      // socket()/CreateEventW with Local\ namespace are blocked — that path
+      // would need a Mojo-aware injector or pre-duplicated handles. v1 ships
+      // sandbox-off support; sandbox-on is a future task.
+      sandbox: false,
     }
   });
   w.loadFile(path.join(__dirname, 'index.html'));

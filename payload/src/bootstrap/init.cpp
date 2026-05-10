@@ -32,13 +32,7 @@ unsigned __stdcall init_thread_main(void*) {
     log::info("payload init starting");
 
     hook::initialize();
-
-    // v8_bridge is the primary execution path: it resolves V8 + libuv exports
-    // (mangled C++ symbols + plain uv_*) and arms a uv_async_t on the default
-    // loop. Works without any addon being loaded.
     bool v8_ok = v8b::V8Bridge::instance().initialize();
-
-    // napi symbol presence is gathered passively (no hooks installed).
     std::vector<std::string> symbols = scan_napi_symbols();
 
     ipc::Server::instance().set_greeter([symbols, pid, v8_ok]() -> wire::Json {

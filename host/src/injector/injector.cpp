@@ -1,6 +1,11 @@
 #include "injector.h"
 #include <Windows.h>
-#include <Psapi.h>
+
+// Blackbone — manual DLL mapping. Bypasses the standard Windows loader so
+// the payload can be planted into sandboxed renderer processes that block
+// LoadLibrary on unsigned/non-system DLLs.
+#include <BlackBone/Process/Process.h>
+#include <BlackBone/ManualMap/MMap.h>
 
 namespace positron::injector {
 
@@ -21,44 +26,38 @@ Result inject(const Options& opt) {
     std::string err;
     if (!target_is_x64(opt.pid, err)) return Error{err};
 
-    HANDLE proc = ::OpenProcess(
-        PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
-        FALSE, opt.pid);
-    if (!proc) return Error{"OpenProcess: " + std::to_string(::GetLastError())};
-
-    SIZE_T bytes = (opt.dll_absolute_path.size() + 1) * sizeof(wchar_t);
-    LPVOID remote = ::VirtualAllocEx(proc, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remote) { ::CloseHandle(proc); return Error{"VirtualAllocEx failed"}; }
-
-    SIZE_T written = 0;
-    if (!::WriteProcessMemory(proc, remote, opt.dll_absolute_path.c_str(), bytes, &written) || written != bytes) {
-        ::VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-        ::CloseHandle(proc);
-        return Error{"WriteProcessMemory failed"};
+    blackbone::Process proc;
+    NTSTATUS status = proc.Attach(opt.pid);
+    if (!NT_SUCCESS(status)) {
+        char buf[64];
+        ::sprintf_s(buf, "0x%08lX", status);
+        return Error{std::string{"blackbone::Attach failed (NTSTATUS "} + buf + ")"};
     }
 
-    auto loadLibraryW = reinterpret_cast<LPTHREAD_START_ROUTINE>(
-        ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
+    // Mapping flags chosen for compatibility with Chromium-sandboxed renderers:
+    //   ManualImports — resolve our payload's IAT without invoking the loader
+    //                   (so the loader's signature/integrity checks never run)
+    //   WipeHeader    — zero PE headers post-map (also drops "we look like a
+    //                   PE here" detection surface)
+    //   NoSxS         — skip SxS activation context (we have no manifest)
+    //   NoDelayLoad   — payload has no delay-loaded imports
+    //
+    // We do NOT pass NoThreads: thread-hijacking on V8's busy main thread
+    // tends to deadlock. The default (CreateRemoteThread) is more reliable.
+    int flags = blackbone::ManualImports
+              | blackbone::WipeHeader
+              | blackbone::NoSxS
+              | blackbone::NoDelayLoad;
 
-    HANDLE thr = ::CreateRemoteThread(proc, nullptr, 0, loadLibraryW, remote, 0, nullptr);
-    if (!thr) {
-        ::VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-        ::CloseHandle(proc);
-        return Error{"CreateRemoteThread failed: " + std::to_string(::GetLastError())};
+    auto map_result = proc.mmap().MapImage(opt.dll_absolute_path,
+                                            static_cast<blackbone::eLoadFlags>(flags));
+    if (!map_result.success()) {
+        char buf[64];
+        ::sprintf_s(buf, "0x%08lX", map_result.status);
+        return Error{std::string{"blackbone::MapImage failed (NTSTATUS "} + buf + ")"};
     }
 
-    DWORD wait = ::WaitForSingleObject(thr, opt.timeout_ms);
-    DWORD exitCode = 0;
-    if (wait == WAIT_OBJECT_0) ::GetExitCodeThread(thr, &exitCode);
-
-    ::CloseHandle(thr);
-    ::VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-    ::CloseHandle(proc);
-
-    if (wait != WAIT_OBJECT_0) return Error{"timeout waiting for LoadLibraryW remote thread"};
-    if (exitCode == 0) return Error{"LoadLibraryW returned NULL in target (DLL failed to load)"};
-
-    return Success{ exitCode };
+    return Success{ static_cast<uint64_t>(map_result.result()->baseAddress) };
 }
 
 } // namespace positron::injector

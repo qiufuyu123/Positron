@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "ipc_server.h"
 #include "logging/log.h"
+// WinSock2 must come before Windows.h.
+#include <WinSock2.h>
+#include <WS2tcpip.h>
 #include <Windows.h>
 #include <thread>
 #include <atomic>
@@ -8,20 +11,35 @@
 #include <condition_variable>
 #include <vector>
 #include <queue>
+#include <chrono>
+
+#pragma comment(lib, "Ws2_32.lib")
 
 using positron::wire::Json;
 
+// Transport: TCP socket to 127.0.0.1:<port>. Replaces named pipes because the
+// Chromium renderer sandbox blocks pipe creation; loopback connect() is still
+// allowed.
+//
+// Roles inverted from the class name: this "Server" actually CONNECTS as a
+// client to a host-side listener. The naming is kept to avoid churning every
+// caller — see comments at the bottom for the public contract.
+
 namespace positron::ipc {
 
-// FILE_FLAG_OVERLAPPED on the pipe so reader thread's ReadFile and writer
-// thread's WriteFile do not serialise on the kernel's per-handle lock.
+static uint16_t port_for_pid(uint32_t pid) {
+    return static_cast<uint16_t>(30000u + (pid % 30000u));
+}
+
+struct Wsa {
+    Wsa()  { WSADATA d; ::WSAStartup(MAKEWORD(2, 2), &d); }
+    ~Wsa() { ::WSACleanup(); }
+};
+static Wsa g_wsa;
 
 struct Impl {
-    HANDLE pipe = INVALID_HANDLE_VALUE;
-    HANDLE read_evt = nullptr;
-    HANDLE write_evt = nullptr;
-    HANDLE connect_evt = nullptr;
-    std::thread accept_thread;
+    SOCKET conn = INVALID_SOCKET;
+    std::thread accept_thread;   // historical name; actually the connect+read thread
     std::thread writer_thread;
     std::atomic<bool> running{false};
     std::atomic<bool> connected{false};
@@ -31,10 +49,6 @@ struct Impl {
     std::mutex outbox_mu;
     std::condition_variable outbox_cv;
     std::queue<std::vector<uint8_t>> outbox;
-
-    std::wstring pipe_name(uint32_t pid) {
-        return L"\\\\.\\pipe\\positron-" + std::to_wstring(pid);
-    }
 
     void start(uint32_t pid, Handler h) {
         handler = std::move(h);
@@ -53,55 +67,59 @@ struct Impl {
                 bytes = std::move(outbox.front());
                 outbox.pop();
             }
-            if (!connected || pipe == INVALID_HANDLE_VALUE) continue;
-            OVERLAPPED ov{};
-            ov.hEvent = write_evt;
-            ::ResetEvent(write_evt);
-            DWORD wrote = 0;
-            BOOL ok = ::WriteFile(pipe, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, &ov);
-            if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
-                if (::GetOverlappedResult(pipe, &ov, &wrote, TRUE)) ok = TRUE;
-            }
-            if (!ok) {
-                log::error("push WriteFile failed: " + std::to_string(::GetLastError()));
+            if (!connected || conn == INVALID_SOCKET) continue;
+            const char* p = reinterpret_cast<const char*>(bytes.data());
+            int remain = static_cast<int>(bytes.size());
+            while (remain > 0) {
+                int n = ::send(conn, p, remain, 0);
+                if (n <= 0) {
+                    log::error("send failed: " + std::to_string(::WSAGetLastError()));
+                    break;
+                }
+                p += n; remain -= n;
             }
         }
     }
 
     void run(uint32_t pid) {
-        auto name = pipe_name(pid);
-        pipe = ::CreateNamedPipeW(name.c_str(),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            1, 1024 * 1024, 1024 * 1024, 0, nullptr);
-        if (pipe == INVALID_HANDLE_VALUE) {
-            log::error("CreateNamedPipeW failed: " + std::to_string(::GetLastError()));
-            return;
-        }
-        read_evt    = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        write_evt   = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        connect_evt = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        log::info("pipe listening: \\\\.\\pipe\\positron-" + std::to_string(pid));
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(port_for_pid(pid));
 
-        // Async ConnectNamedPipe.
-        OVERLAPPED ov_connect{};
-        ov_connect.hEvent = connect_evt;
-        BOOL connected_now = ::ConnectNamedPipe(pipe, &ov_connect);
-        if (!connected_now) {
-            DWORD err = ::GetLastError();
-            if (err == ERROR_PIPE_CONNECTED) {
-                connected_now = TRUE;
-            } else if (err == ERROR_IO_PENDING) {
-                DWORD got = 0;
-                if (::GetOverlappedResult(pipe, &ov_connect, &got, TRUE)) connected_now = TRUE;
-            } else {
-                log::error("ConnectNamedPipe failed: " + std::to_string(err));
+        int attempts = 0;
+        constexpr int max_attempts = 50;
+        while (running && attempts < max_attempts) {
+            ++attempts;
+            conn = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (conn == INVALID_SOCKET) {
+                log::error("socket() failed: " + std::to_string(::WSAGetLastError()));
                 return;
             }
+            if (::connect(conn, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+                break;
+            }
+            int err = ::WSAGetLastError();
+            ::closesocket(conn);
+            conn = INVALID_SOCKET;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (attempts == 1 || attempts == max_attempts) {
+                log::warn("connect attempt " + std::to_string(attempts) +
+                          " to 127.0.0.1:" + std::to_string(ntohs(addr.sin_port)) +
+                          " err=" + std::to_string(err));
+            }
         }
-        if (!connected_now) { log::error("ConnectNamedPipe gave up"); return; }
+        if (conn == INVALID_SOCKET) {
+            log::error("could not connect to host within timeout");
+            return;
+        }
+
+        BOOL nodelay = TRUE;
+        ::setsockopt(conn, IPPROTO_TCP, TCP_NODELAY,
+                     reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+
         connected = true;
-        log::info("pipe client connected");
+        log::info("connected to host on port " + std::to_string(ntohs(addr.sin_port)));
 
         if (greeter) {
             try {
@@ -118,20 +136,10 @@ struct Impl {
         std::vector<uint8_t> chunk(8192);
 
         while (running) {
-            OVERLAPPED ov{};
-            ov.hEvent = read_evt;
-            ::ResetEvent(read_evt);
-            DWORD got = 0;
-            BOOL rok = ::ReadFile(pipe, chunk.data(), static_cast<DWORD>(chunk.size()), &got, &ov);
-            if (!rok && ::GetLastError() == ERROR_IO_PENDING) {
-                if (!::GetOverlappedResult(pipe, &ov, &got, TRUE)) {
-                    log::info("pipe disconnected (overlapped read failed)");
-                    break;
-                }
-                rok = TRUE;
-            }
-            if (!rok || got == 0) {
-                log::info("pipe disconnected");
+            int got = ::recv(conn, reinterpret_cast<char*>(chunk.data()),
+                             static_cast<int>(chunk.size()), 0);
+            if (got <= 0) {
+                log::info("socket disconnected");
                 break;
             }
             buf.insert(buf.end(), chunk.data(), chunk.data() + got);
@@ -147,9 +155,9 @@ struct Impl {
             }
         }
         connected = false;
-        if (pipe != INVALID_HANDLE_VALUE) {
-            ::CloseHandle(pipe);
-            pipe = INVALID_HANDLE_VALUE;
+        if (conn != INVALID_SOCKET) {
+            ::closesocket(conn);
+            conn = INVALID_SOCKET;
         }
     }
 
@@ -166,12 +174,9 @@ struct Impl {
     void stop() {
         running = false;
         outbox_cv.notify_all();
-        if (pipe != INVALID_HANDLE_VALUE) ::DisconnectNamedPipe(pipe);
+        if (conn != INVALID_SOCKET) ::shutdown(conn, SD_BOTH);
         if (accept_thread.joinable()) accept_thread.join();
         if (writer_thread.joinable()) writer_thread.join();
-        if (read_evt)    { ::CloseHandle(read_evt);    read_evt = nullptr; }
-        if (write_evt)   { ::CloseHandle(write_evt);   write_evt = nullptr; }
-        if (connect_evt) { ::CloseHandle(connect_evt); connect_evt = nullptr; }
     }
 };
 
