@@ -149,7 +149,8 @@ struct Client::Impl {
     std::optional<Json> recv(uint32_t timeout_ms) {
         std::unique_lock<std::mutex> lk(mu);
         if (timeout_ms == 0) {
-            cv.wait(lk, [this]{ return !inbox.empty() || !open; });
+            // Non-blocking peek: return immediately if nothing queued.
+            if (inbox.empty()) return std::nullopt;
         } else {
             cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
                 [this]{ return !inbox.empty() || !open; });

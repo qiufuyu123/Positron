@@ -7,6 +7,10 @@
 #include "v8_bridge/v8_bridge.h"
 #include "wire/wire.h"
 #include <Windows.h>
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <cstdio>
 #include <vector>
 #include <string>
 
@@ -47,6 +51,31 @@ unsigned __stdcall init_thread_main(void*) {
     ipc::Server::instance().start(pid, [](const wire::Json& cmd) {
         auto kind = cmd.value("kind", std::string{});
         log::info("ipc recv kind=" + kind);
+        if (kind == "detach") {
+            log::info("detach: disabling hooks + closing connection");
+            hook::shutdown();
+            ipc::Server::instance().stop();
+            return;
+        }
+        if (kind == "hook.install") {
+            auto req = wire::decode_hook_install(cmd);
+            // Find any module that exports the requested symbol.
+            auto found = pe::find_exports_with(req.symbol);
+            if (!found) {
+                log::warn("hook.install: symbol not found in any module: " + req.symbol);
+                return;
+            }
+            auto addr = found->table.abs(req.symbol);
+            if (!addr) {
+                log::warn("hook.install: resolve failed: " + req.symbol);
+                return;
+            }
+            int slot = hook::install_user_hook(req.id, reinterpret_cast<void*>(*addr));
+            log::info("hook.install id=" + std::to_string(req.id)
+                      + " sym=" + req.symbol
+                      + " slot=" + std::to_string(slot));
+            return;
+        }
         if (kind == "eval") {
             wire::EvalRequest req = wire::decode_eval_request(cmd);
             uint64_t id = req.id;
@@ -74,6 +103,30 @@ unsigned __stdcall init_thread_main(void*) {
         }
     });
     log::info("ipc server started");
+
+    // Hit-flusher: periodically drain the hook ring buffer and emit hook.hit
+    // events. Detaches because the payload outlives this thread.
+    static std::atomic<bool> flusher_running{true};
+    std::thread([]{
+        while (flusher_running.load()) {
+            hook::UserHit hit{};
+            uint32_t dropped = 0;
+            while (hook::drain_user_hit(&hit, &dropped)) {
+                wire::HookHitEvent ev;
+                ev.hook_id = hit.hook_id;
+                for (int i = 0; i < 4; ++i) {
+                    char buf[32];
+                    std::snprintf(buf, sizeof(buf), "\"0x%llx\"",
+                                  static_cast<unsigned long long>(hit.args[i]));
+                    ev.args_json.push_back(buf);
+                }
+                ev.dropped_since_last = dropped;
+                ipc::Server::instance().push(wire::encode_hook_hit(ev));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }).detach();
+
     return 0;
 }
 
