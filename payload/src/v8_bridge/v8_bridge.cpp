@@ -521,15 +521,32 @@ bool V8Bridge::eval_renderer_async(std::string code, int window_index,
     // picks it up.
     std::string key = "_pR" + std::to_string(id);
     std::string idx = std::to_string(window_index);
-    // The script must return a v8::String — otherwise WriteUtf8V2 in
-    // run_script_get_string will assert in V8 internals and crash the host.
-    // Trailing `;""` makes the script's value the empty string regardless of
-    // the IIFE's result.
+    // The launcher must:
+    //   1. resolve the electron module robustly — some Electron embeddings
+    //      (Bluebook, packaged apps with security hardening) delete the
+    //      global `require`, so we fall back through process.mainModule.require
+    //      and finally process._linkedBinding('electron_browser_window');
+    //   2. dispatch webContents.executeJavaScript(..., true);
+    //   3. park the settled result on globalThis._pR<id>;
+    //   4. return a v8::String — trailing `;""` keeps WriteUtf8V2 happy
+    //      regardless of what the IIFE itself produces.
     std::string launcher =
         std::string{"(function(){"} +
         "var K='" + key + "';"
+        "function _RE(){"
+            "if(typeof require==='function'){try{return require('electron');}catch(e){}}"
+            "try{if(process&&process.mainModule&&process.mainModule.require)"
+                "return process.mainModule.require('electron');}catch(e){}"
+            "try{if(process&&typeof process._linkedBinding==='function'){"
+                "var w=process._linkedBinding('electron_browser_window');"
+                "if(w&&w.BrowserWindow)return{BrowserWindow:w.BrowserWindow};"
+            "}}catch(e){}"
+            "throw new Error('cannot resolve electron module (no require, no process.mainModule.require, no _linkedBinding)');"
+        "}"
         "try{"
-            "var ws=require('electron').BrowserWindow.getAllWindows();"
+            "var BW=_RE().BrowserWindow;"
+            "if(!BW||typeof BW.getAllWindows!=='function')throw new Error('BrowserWindow.getAllWindows not available');"
+            "var ws=BW.getAllWindows();"
             "var w=ws[" + idx + "];"
             "if(!w){globalThis[K]=JSON.stringify({error:{message:'no BrowserWindow at index " + idx + " (have '+ws.length+')',stack:''}});return;}"
             "w.webContents.executeJavaScript(" + user_src_lit + ",true).then("
