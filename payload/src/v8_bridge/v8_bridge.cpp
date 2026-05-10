@@ -521,6 +521,10 @@ bool V8Bridge::eval_renderer_async(std::string code, int window_index,
     // picks it up.
     std::string key = "_pR" + std::to_string(id);
     std::string idx = std::to_string(window_index);
+    // The script must return a v8::String — otherwise WriteUtf8V2 in
+    // run_script_get_string will assert in V8 internals and crash the host.
+    // Trailing `;""` makes the script's value the empty string regardless of
+    // the IIFE's result.
     std::string launcher =
         std::string{"(function(){"} +
         "var K='" + key + "';"
@@ -534,7 +538,7 @@ bool V8Bridge::eval_renderer_async(std::string code, int window_index,
                 "function(e){globalThis[K]=JSON.stringify({error:{message:String((e&&e.message)||e),stack:String((e&&e.stack)||\"\")}});}"
             ");"
         "}catch(e){globalThis[K]=JSON.stringify({error:{message:String((e&&e.message)||e),stack:String((e&&e.stack)||\"\")}});}"
-        "})()";
+        "})();''";
 
     PendingRenderer pe;
     pe.id = id;
