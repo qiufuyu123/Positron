@@ -23,12 +23,25 @@ static std::wstring read_command_line(HANDLE h) {
     ULONG ret = 0;
     if (NtQIP(h, 0, &pbi, sizeof(pbi), &ret) != 0 || !pbi.PebBaseAddress) return {};
 
+    // PEB layout differs between x86 and x64. Use offsets matching this host's
+    // architecture — we only ever read same-bitness targets (cross-bitness
+    // injection isn't supported by Blackbone's manual mapping anyway).
+#ifdef _M_X64
+    constexpr SIZE_T kPebProcessParametersOffset = 0x20;
+    constexpr SIZE_T kRupCommandLineOffset       = 0x70;
+#else
+    constexpr SIZE_T kPebProcessParametersOffset = 0x10;
+    constexpr SIZE_T kRupCommandLineOffset       = 0x40;
+#endif
+
     PVOID upp = nullptr;
     SIZE_T r;
-    if (!::ReadProcessMemory(h, (BYTE*)pbi.PebBaseAddress + 0x20, &upp, sizeof(upp), &r) || r != sizeof(upp) || !upp) return {};
+    if (!::ReadProcessMemory(h, (BYTE*)pbi.PebBaseAddress + kPebProcessParametersOffset,
+                             &upp, sizeof(upp), &r) || r != sizeof(upp) || !upp) return {};
 
     UNICODE_STRING cl{};
-    if (!::ReadProcessMemory(h, (BYTE*)upp + 0x70, &cl, sizeof(cl), &r) || r != sizeof(cl) || !cl.Buffer) return {};
+    if (!::ReadProcessMemory(h, (BYTE*)upp + kRupCommandLineOffset,
+                             &cl, sizeof(cl), &r) || r != sizeof(cl) || !cl.Buffer) return {};
 
     std::wstring out(cl.Length / sizeof(wchar_t), L'\0');
     if (!::ReadProcessMemory(h, cl.Buffer, out.data(), cl.Length, &r)) return {};
