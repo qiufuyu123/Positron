@@ -18,7 +18,18 @@ bool target_is_x64(uint32_t pid, std::string& err) {
     if (!ok) { err = "IsWow64Process2 failed: " + std::to_string(::GetLastError()); return false; }
     USHORT effective = (proc == IMAGE_FILE_MACHINE_UNKNOWN) ? mach : proc;
     if (effective == IMAGE_FILE_MACHINE_AMD64) return true;
-    err = "target architecture " + std::to_string(effective) + " is not x64";
+
+    const char* arch = "unknown";
+    switch (effective) {
+        case IMAGE_FILE_MACHINE_I386:  arch = "x86 (32-bit)"; break;
+        case IMAGE_FILE_MACHINE_ARM64: arch = "ARM64"; break;
+        case IMAGE_FILE_MACHINE_ARM:   arch = "ARM (32-bit)"; break;
+        case IMAGE_FILE_MACHINE_ARMNT: arch = "ARM Thumb-2"; break;
+        default: break;
+    }
+    err = std::string{"target is "} + arch + " (machine=0x" +
+          [&]{ char b[8]; ::sprintf_s(b, "%X", effective); return std::string{b}; }() +
+          "). positron is x64 only — pick an x64 target.";
     return false;
 }
 

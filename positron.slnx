@@ -1,6 +1,7 @@
 <Solution>
   <Configurations>
     <Platform Name="x64" />
+    <Platform Name="Win32" />
   </Configurations>
   <Project Path="host/host.vcxproj" Id="f2087b6f-1b68-443d-8ef1-0dd82dbf7b10" />
   <Project Path="payload/payload.vcxproj" Id="cba9ce88-817f-4631-a453-8763934721ce" />

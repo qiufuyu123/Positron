@@ -14,48 +14,66 @@
 #include <nlohmann/json.hpp>
 
 // =============================================================================
-// V8 + libuv FFI calling-convention notes (clang-cl built electron.exe / V8)
+// V8 + libuv FFI calling-convention notes
 // =============================================================================
 //
-// STATIC functions returning a non-trivial type (Local<T>/MaybeLocal<T>):
-//   args layout: [ret_ptr@RCX, args@RDX, R8, R9, stack...]
-//   This matches the standard MSVC x64 ABI for non-trivial returns.
+// x64 (clang-cl built V8):
+//   STATIC fn, non-trivial return:  [ret_ptr@RCX, args@RDX, R8, R9, stack...]
+//     — matches standard MSVC x64.
+//   MEMBER fn, non-trivial return:  [this@RCX, ret_ptr@RDX, args@R8, R9, ...]
+//     — Itanium-style this-first; NOT standard MSVC. Verified on Electron 42
+//       / V8 13.x.
+//   Trivial returns (pointer/bool/size_t) → RAX.
 //
-// MEMBER functions returning a non-trivial type:
-//   args layout: [this@RCX, ret_ptr@RDX, args@R8, R9, stack...]
-//   NOT standard MSVC ABI (which would put ret_ptr first). V8 (clang-cl per
-//   Chromium build) uses Itanium-style this-first ordering for these. Verified
-//   empirically on Electron 42 / V8 13.x.
+// x86 (Win32):
+//   STATIC fn (cdecl), non-trivial return:  [ret_ptr, args...] all on stack.
+//   MEMBER fn (thiscall), non-trivial return:
+//     this in ECX; ret_ptr is the first stack slot; args follow.
+//   Trivial returns → EAX.
 //
-// Trivial returns (pointer, bool, size_t) come back in RAX as usual.
+// Use CC and CCM macros below to write one set of typedefs that compile to
+// the right calling convention on both architectures.
 
-// Storage for inline scope objects. Real V8 sizes on x64:
-//   HandleScope ~= 24 bytes; TryCatch ~= 56 bytes; uv_async_t ~= 144 bytes.
-// We over-allocate to cushion against V8 layout changes.
+#ifdef _M_IX86
+  #define POS_CC   __cdecl
+  #define POS_CCM  __thiscall
+#else
+  #define POS_CC
+  #define POS_CCM
+#endif
+
+// Storage for inline scope objects. Real V8/uv sizes vary across versions
+// and bitness; we over-allocate generously. (uv_async_t in particular is a
+// large libuv handle; 256B fits comfortably on x86 and x64 alike.)
 namespace { constexpr size_t kHandleScopeBytes = 64; }
 namespace { constexpr size_t kTryCatchBytes    = 128; }
 namespace { constexpr size_t kUvAsyncBytes     = 256; }
 
 namespace {
 
-// libuv (undecorated)
-using p_uv_default_loop = void* (*)();
-using p_uv_async_init   = int   (*)(void* loop, void* async, void(*cb)(void*));
-using p_uv_async_send   = int   (*)(void* async);
-using p_uv_unref        = void  (*)(void* handle);
+// libuv (undecorated; cdecl on both archs)
+using p_uv_default_loop = void* (POS_CC *)();
+using p_uv_async_init   = int   (POS_CC *)(void* loop, void* async, void(POS_CC *cb)(void*));
+using p_uv_async_send   = int   (POS_CC *)(void* async);
+using p_uv_unref        = void  (POS_CC *)(void* handle);
 
-// v8 — see ABI notes above
-using p_Isolate_TryGetCurrent     = void* (*)();
-using p_Isolate_GetCurrentContext = void  (*)(void* iso, void** ret);
-using p_Isolate_InContext         = bool  (*)(void* iso);
+// v8 statics (cdecl) — see ABI notes above
+using p_Isolate_TryGetCurrent     = void* (POS_CC *)();
 
-using p_HandleScope_ctor = void (*)(void* hs_storage, void* iso);
-using p_HandleScope_dtor = void (*)(void* hs_storage);
+// v8 members (thiscall on x86, default on x64)
+using p_Isolate_GetCurrentContext = void  (POS_CCM *)(void* iso, void** ret);
+using p_Isolate_InContext         = bool  (POS_CCM *)(void* iso);
 
-using p_String_NewFromUtf8 = void   (*)(void** ret, void* iso, const char* data, int new_string_type, int length);
-using p_Script_Compile     = void   (*)(void** ret, void* ctx, void* src, void* origin);
-using p_Script_Run         = void   (*)(void* script, void** ret, void* ctx);
-using p_String_WriteUtf8V2 = size_t (*)(void* str, void* iso, char* buf, size_t cap, int flags, size_t* processed);
+using p_HandleScope_ctor = void (POS_CCM *)(void* hs_storage, void* iso);
+using p_HandleScope_dtor = void (POS_CCM *)(void* hs_storage);
+
+// statics (cdecl)
+using p_String_NewFromUtf8 = void   (POS_CC *)(void** ret, void* iso, const char* data, int new_string_type, int length);
+using p_Script_Compile     = void   (POS_CC *)(void** ret, void* ctx, void* src, void* origin);
+
+// members
+using p_Script_Run         = void   (POS_CCM *)(void* script, void** ret, void* ctx);
+using p_String_WriteUtf8V2 = size_t (POS_CCM *)(void* str, void* iso, char* buf, size_t cap, int flags, size_t* processed);
 
 struct Resolved {
     p_uv_default_loop            uv_default_loop = nullptr;
@@ -86,7 +104,7 @@ static void* g_async_handle = static_cast<void*>(g_async_storage);
 static std::mutex g_q_mu;
 static std::queue<std::function<void()>> g_q;
 
-static void async_cb(void* /*async*/) {
+static void POS_CC async_cb(void* /*async*/) {
     std::queue<std::function<void()>> drain;
     {
         std::lock_guard<std::mutex> lk(g_q_mu);
