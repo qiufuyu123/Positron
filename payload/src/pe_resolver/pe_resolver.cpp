@@ -1,9 +1,12 @@
 #include "pe_resolver.h"
 #include <Windows.h>
 #include <Psapi.h>
+#include <algorithm>
 #include <stdexcept>
 
 namespace positron::pe {
+
+static bool name_matches(const std::string& name, const SymbolPattern& p);
 
 ExportTable parse_exports(const void* base) {
     auto* dos = static_cast<const IMAGE_DOS_HEADER*>(base);
@@ -36,11 +39,14 @@ ExportTable parse_exports(const void* base) {
     return t;
 }
 
-static std::optional<ResolveResult> try_module(HMODULE m, const std::string& marker) {
+// Returns ResolveResult if module `m` parses successfully and `predicate`
+// returns true on its export table.
+template <typename Pred>
+static std::optional<ResolveResult> try_module_pred(HMODULE m, Pred&& pred) {
     if (!m) return std::nullopt;
     try {
         auto t = parse_exports(m);
-        if (t.rva_by_name.count(marker)) {
+        if (pred(t)) {
             wchar_t name[MAX_PATH] = {};
             ::GetModuleFileNameW(m, name, MAX_PATH);
             return ResolveResult{ std::move(t), std::wstring{name} };
@@ -49,8 +55,8 @@ static std::optional<ResolveResult> try_module(HMODULE m, const std::string& mar
     return std::nullopt;
 }
 
-std::optional<ResolveResult> find_exports_with(const std::string& marker) {
-    // Fast path: small set of well-known candidates.
+template <typename Pred>
+static std::optional<ResolveResult> find_exports_pred(Pred&& pred) {
     HMODULE candidates[8]{};
     int n = 0;
     candidates[n++] = ::GetModuleHandleW(nullptr);
@@ -59,12 +65,9 @@ std::optional<ResolveResult> find_exports_with(const std::string& marker) {
     candidates[n++] = ::GetModuleHandleW(L"electron.exe");
 
     for (int i = 0; i < n; ++i) {
-        if (auto r = try_module(candidates[i], marker)) return r;
+        if (auto r = try_module_pred(candidates[i], pred)) return r;
     }
 
-    // Fallback: scan every loaded module. Useful for symbols that live in a
-    // loaded native addon (e.g. addon-exported `napi_register_module_v1`) or
-    // a renderer-side helper DLL.
     HANDLE proc = ::GetCurrentProcess();
     DWORD needed = 0;
     if (!::EnumProcessModules(proc, nullptr, 0, &needed) || needed == 0) {
@@ -77,9 +80,57 @@ std::optional<ResolveResult> find_exports_with(const std::string& marker) {
     }
     mods.resize(needed / sizeof(HMODULE));
     for (HMODULE m : mods) {
-        if (auto r = try_module(m, marker)) return r;
+        if (auto r = try_module_pred(m, pred)) return r;
     }
     return std::nullopt;
+}
+
+std::optional<ResolveResult> find_exports_with(const std::string& marker) {
+    return find_exports_pred([&](const ExportTable& t){
+        return t.rva_by_name.count(marker) != 0;
+    });
+}
+
+std::optional<ResolveResult> find_exports_matching(const SymbolPattern& p) {
+    return find_exports_pred([&](const ExportTable& t){
+        for (auto& kv : t.rva_by_name) {
+            if (name_matches(kv.first, p)) return true;
+        }
+        return false;
+    });
+}
+
+static bool name_matches(const std::string& name, const SymbolPattern& p) {
+    for (auto sv : p.must_contain) {
+        if (name.find(sv) == std::string::npos) return false;
+    }
+    for (auto sv : p.must_not_contain) {
+        if (name.find(sv) != std::string::npos) return false;
+    }
+    return true;
+}
+
+std::vector<ResolvedSymbol> find_all(const ExportTable& t, const SymbolPattern& p) {
+    std::vector<ResolvedSymbol> out;
+    for (auto& kv : t.rva_by_name) {
+        if (name_matches(kv.first, p)) {
+            out.push_back({ kv.first, t.image_base + kv.second });
+        }
+    }
+    return out;
+}
+
+std::optional<ResolvedSymbol> find_one(const ExportTable& t, const SymbolPattern& p) {
+    auto matches = find_all(t, p);
+    if (matches.empty()) return std::nullopt;
+    if (matches.size() == 1) return matches[0];
+    // Multiple matches: pick the shortest mangled name as a heuristic for the
+    // least-specialised overload. (More template parameters / extra args
+    // typically grow the mangled length.)
+    std::sort(matches.begin(), matches.end(), [](auto& a, auto& b){
+        return a.name.size() < b.name.size();
+    });
+    return matches.front();
 }
 
 } // namespace positron::pe

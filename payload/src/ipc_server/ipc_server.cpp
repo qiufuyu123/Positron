@@ -54,7 +54,6 @@ struct Impl {
                 outbox.pop();
             }
             if (!connected || pipe == INVALID_HANDLE_VALUE) continue;
-            log::info("writer: WriteFile " + std::to_string(bytes.size()) + " bytes");
             OVERLAPPED ov{};
             ov.hEvent = write_evt;
             ::ResetEvent(write_evt);
@@ -65,8 +64,6 @@ struct Impl {
             }
             if (!ok) {
                 log::error("push WriteFile failed: " + std::to_string(::GetLastError()));
-            } else {
-                log::info("writer: WriteFile ok wrote=" + std::to_string(wrote));
             }
         }
     }
