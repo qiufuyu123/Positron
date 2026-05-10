@@ -36,7 +36,21 @@ ExportTable parse_exports(const void* base) {
     return t;
 }
 
+static std::optional<ResolveResult> try_module(HMODULE m, const std::string& marker) {
+    if (!m) return std::nullopt;
+    try {
+        auto t = parse_exports(m);
+        if (t.rva_by_name.count(marker)) {
+            wchar_t name[MAX_PATH] = {};
+            ::GetModuleFileNameW(m, name, MAX_PATH);
+            return ResolveResult{ std::move(t), std::wstring{name} };
+        }
+    } catch (...) { /* skip */ }
+    return std::nullopt;
+}
+
 std::optional<ResolveResult> find_exports_with(const std::string& marker) {
+    // Fast path: small set of well-known candidates.
     HMODULE candidates[8]{};
     int n = 0;
     candidates[n++] = ::GetModuleHandleW(nullptr);
@@ -45,15 +59,25 @@ std::optional<ResolveResult> find_exports_with(const std::string& marker) {
     candidates[n++] = ::GetModuleHandleW(L"electron.exe");
 
     for (int i = 0; i < n; ++i) {
-        if (!candidates[i]) continue;
-        try {
-            auto t = parse_exports(candidates[i]);
-            if (t.rva_by_name.count(marker)) {
-                wchar_t name[MAX_PATH] = {};
-                ::GetModuleFileNameW(candidates[i], name, MAX_PATH);
-                return ResolveResult{ std::move(t), std::wstring{name} };
-            }
-        } catch (...) { /* try next */ }
+        if (auto r = try_module(candidates[i], marker)) return r;
+    }
+
+    // Fallback: scan every loaded module. Useful for symbols that live in a
+    // loaded native addon (e.g. addon-exported `napi_register_module_v1`) or
+    // a renderer-side helper DLL.
+    HANDLE proc = ::GetCurrentProcess();
+    DWORD needed = 0;
+    if (!::EnumProcessModules(proc, nullptr, 0, &needed) || needed == 0) {
+        return std::nullopt;
+    }
+    std::vector<HMODULE> mods(needed / sizeof(HMODULE));
+    if (!::EnumProcessModules(proc, mods.data(),
+                              static_cast<DWORD>(mods.size() * sizeof(HMODULE)), &needed)) {
+        return std::nullopt;
+    }
+    mods.resize(needed / sizeof(HMODULE));
+    for (HMODULE m : mods) {
+        if (auto r = try_module(m, marker)) return r;
     }
     return std::nullopt;
 }

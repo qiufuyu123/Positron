@@ -92,7 +92,7 @@
     </ClCompile>
     <ClCompile Include="src\ipc_server\ipc_server.cpp" />
     <ClCompile Include="src\hook_engine\hook_engine.cpp" />
-    <ClCompile Include="src\napi_bridge\napi_bridge.cpp" />
+    <ClCompile Include="src\v8_bridge\v8_bridge.cpp" />
     <ClCompile Include="src\js_executor\js_executor.cpp" />
     <ClCompile Include="..\shared\wire\wire.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
