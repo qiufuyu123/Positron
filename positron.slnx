@@ -2,9 +2,9 @@
   <Configurations>
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="host/host.vcxproj" />
-  <Project Path="payload/payload.vcxproj" />
-  <Project Path="tests/unit_host/unit_host.vcxproj" />
-  <Project Path="tests/unit_payload/unit_payload.vcxproj" />
-  <Project Path="tests/integration/integration.vcxproj" />
+  <Project Path="host/host.vcxproj" Id="f2087b6f-1b68-443d-8ef1-0dd82dbf7b10" />
+  <Project Path="payload/payload.vcxproj" Id="cba9ce88-817f-4631-a453-8763934721ce" />
+  <Project Path="tests/unit_host/unit_host.vcxproj" Id="02b939fa-2350-40c5-a526-277ad7c0e4e2" />
+  <Project Path="tests/unit_payload/unit_payload.vcxproj" Id="fce1f18c-15a8-4d04-9941-21434af1f959" />
+  <Project Path="tests/integration/integration.vcxproj" Id="3072d39f-6c76-4351-bc09-e816f98b0bd3" />
 </Solution>
