@@ -79,18 +79,25 @@ unsigned __stdcall init_thread_main(void*) {
         if (kind == "eval") {
             wire::EvalRequest req = wire::decode_eval_request(cmd);
             uint64_t id = req.id;
-            bool sched = v8b::V8Bridge::instance().eval_async(req.code,
-                [id](v8b::V8Bridge::EvalOutcome out) {
-                    wire::EvalResponse resp;
-                    resp.id = id;
-                    resp.ok = out.ok;
-                    if (out.ok) {
-                        resp.result = wire::EvalResult{ out.type_tag, out.json_value };
-                    } else {
-                        resp.error = wire::EvalError{ out.error_message, out.error_stack };
-                    }
-                    ipc::Server::instance().push(wire::encode_eval_response(resp));
-                });
+            auto cb = [id](v8b::V8Bridge::EvalOutcome out) {
+                wire::EvalResponse resp;
+                resp.id = id;
+                resp.ok = out.ok;
+                if (out.ok) {
+                    resp.result = wire::EvalResult{ out.type_tag, out.json_value };
+                } else {
+                    resp.error = wire::EvalError{ out.error_message, out.error_stack };
+                }
+                ipc::Server::instance().push(wire::encode_eval_response(resp));
+            };
+
+            bool sched;
+            if (req.world == "renderer") {
+                int idx = req.world_index.value_or(0);
+                sched = v8b::V8Bridge::instance().eval_renderer_async(req.code, idx, cb);
+            } else {
+                sched = v8b::V8Bridge::instance().eval_async(req.code, cb);
+            }
             if (!sched) {
                 wire::EvalResponse resp;
                 resp.id = req.id;

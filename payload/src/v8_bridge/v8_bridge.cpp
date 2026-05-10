@@ -63,6 +63,7 @@ using p_Isolate_TryGetCurrent     = void* (POS_CC *)();
 // v8 members (thiscall on x86, default on x64)
 using p_Isolate_GetCurrentContext = void  (POS_CCM *)(void* iso, void** ret);
 using p_Isolate_InContext         = bool  (POS_CCM *)(void* iso);
+using p_Isolate_PerformMicrotaskCheckpoint = void (POS_CCM *)(void* iso);
 
 using p_HandleScope_ctor = void (POS_CCM *)(void* hs_storage, void* iso);
 using p_HandleScope_dtor = void (POS_CCM *)(void* hs_storage);
@@ -84,6 +85,7 @@ struct Resolved {
     p_Isolate_TryGetCurrent      Isolate_TryGetCurrent     = nullptr;
     p_Isolate_GetCurrentContext  Isolate_GetCurrentContext = nullptr;
     p_Isolate_InContext          Isolate_InContext         = nullptr;
+    p_Isolate_PerformMicrotaskCheckpoint Isolate_PerformMicrotaskCheckpoint = nullptr;
 
     p_HandleScope_ctor           HandleScope_ctor = nullptr;
     p_HandleScope_dtor           HandleScope_dtor = nullptr;
@@ -187,6 +189,15 @@ static std::vector<SymSpec> symbol_specs() {
         {"String::WriteUtf8V2",
          reinterpret_cast<void**>(&g_r.String_WriteUtf8V2),
          {{"WriteUtf8V2@String@v8"}}},
+
+        // v8::Isolate::PerformMicrotaskCheckpoint — drains queued microtasks.
+        // Required after we Compile/Run code that schedules .then() handlers
+        // on Promises returned by webContents.executeJavaScript, in case the
+        // host's microtasks policy is kExplicit / kScoped (Node default is
+        // kAuto, but Electron embeddings may differ).
+        {"Isolate::PerformMicrotaskCheckpoint",
+         reinterpret_cast<void**>(&g_r.Isolate_PerformMicrotaskCheckpoint),
+         {{"PerformMicrotaskCheckpoint", "Isolate", "v8"}}},
     };
 }
 
@@ -259,11 +270,213 @@ bool V8Bridge::run_on_v8_thread(std::function<void()> fn) {
     return true;
 }
 
+} // namespace positron::v8b
+
+// =============================================================================
+// V8-thread helpers (callers MUST be on the V8 thread)
+// =============================================================================
+
+namespace {
+
+// Compile + run a JS string. The script SHOULD return a JS string; this is
+// extracted via WriteUtf8V2 into `out_string`. On failure, returns false and
+// sets `out_err`. (Caller owns HandleScope.)
+bool run_script_get_string(void* iso, void* ctx, const std::string& js,
+                           std::string& out_string, std::string& out_err) {
+    void* src = nullptr;
+    g_r.String_NewFromUtf8(&src, iso, js.c_str(), 0, static_cast<int>(js.size()));
+    if (!src) { out_err = "NewFromUtf8 failed"; return false; }
+
+    void* script = nullptr;
+    g_r.Script_Compile(&script, ctx, src, nullptr);
+    if (!script) { out_err = "compile failed"; return false; }
+
+    void* result = nullptr;
+    g_r.Script_Run(script, &result, ctx);
+    if (!result) { out_err = "run failed"; return false; }
+
+    // Buffer sized for typical eval results; renderer hop wrappers read just
+    // a single small JSON object from the launcher script (which doesn't
+    // return anything), so 4 KB is plenty here.
+    char small[8192];
+    size_t processed = 0;
+    size_t n = g_r.String_WriteUtf8V2(result, iso, small, sizeof(small) - 1, 0, &processed);
+    out_string.assign(small, small + n);
+    return true;
+}
+
+// Parse a JSON wrapper-string of shape:
+//   {"type": "...", "value": ...}        — ok
+//   {"error": {"message": "...", "stack": "..."}}   — failure
+// Mutates `out` accordingly.
+void apply_wrapper_json(const std::string& s, positron::v8b::V8Bridge::EvalOutcome& out) {
+    try {
+        auto j = nlohmann::json::parse(s);
+        if (j.contains("error")) {
+            out.ok = false;
+            out.error_message = j["error"].value("message", std::string{});
+            out.error_stack   = j["error"].value("stack",   std::string{});
+        } else {
+            out.ok = true;
+            out.type_tag = j.value("type", std::string{});
+            if (j.contains("value") && !j["value"].is_null()) {
+                out.json_value = j["value"].dump();
+            } else {
+                out.json_value = "null";
+            }
+        }
+    } catch (const std::exception& e) {
+        out.ok = false;
+        out.error_message = std::string{"result parse error: "} + e.what();
+        out.error_stack = s;
+    }
+}
+
+// =============================================================================
+// Renderer-eval pending list + poller
+// =============================================================================
+//
+// webContents.executeJavaScript() returns a Promise that resolves only after a
+// Mojo IPC round-trip with the renderer process. We can't block the main V8
+// thread waiting for that — V8 itself has to keep running to even receive the
+// IPC. So we:
+//
+//   1. run a "launcher" script that schedules a .then() handler which, on
+//      resolution, parks the result on globalThis under a unique key
+//      "_pR<id>";
+//   2. push a PendingRenderer entry onto g_renderer_pending;
+//   3. let a low-frequency poller thread schedule a single batched read on
+//      the V8 thread every ~100 ms — that read pulls every resolved key in
+//      one Compile/Run, so the cost stays O(1) regardless of how many evals
+//      are in flight.
+
+struct PendingRenderer {
+    uint64_t                                  id;
+    std::function<void(positron::v8b::V8Bridge::EvalOutcome)> done;
+    std::chrono::steady_clock::time_point     deadline;
+};
+
+static std::mutex                  g_renderer_mu;
+static std::vector<PendingRenderer> g_renderer_pending;
+static std::atomic<uint64_t>       g_renderer_id_counter{1};
+static std::atomic<bool>           g_poller_started{false};
+
+void poll_renderer_pending_on_v8_thread() {
+    std::vector<PendingRenderer> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(g_renderer_mu);
+        snapshot = g_renderer_pending;
+    }
+    if (snapshot.empty()) return;
+
+    void* iso = g_r.Isolate_TryGetCurrent();
+    if (!iso) return;
+    alignas(16) uint8_t hs_buf[kHandleScopeBytes];
+    std::memset(hs_buf, 0, sizeof(hs_buf));
+    g_r.HandleScope_ctor(hs_buf, iso);
+    void* ctx = nullptr;
+    g_r.Isolate_GetCurrentContext(iso, &ctx);
+    if (!ctx) { g_r.HandleScope_dtor(hs_buf); return; }
+
+    // Build "[id1,id2,...]" id list once, query all keys in one round-trip.
+    std::string ids_arr = "[";
+    for (size_t i = 0; i < snapshot.size(); ++i) {
+        if (i) ids_arr.push_back(',');
+        ids_arr += std::to_string(snapshot[i].id);
+    }
+    ids_arr += "]";
+    std::string js =
+        "(function(ids){var out={};for(var i=0;i<ids.length;i++){"
+        "var k='_pR'+ids[i];var v=globalThis[k];"
+        "if(typeof v==='string'){out[ids[i]]=v;delete globalThis[k];}}"
+        "return JSON.stringify(out);})(" + ids_arr + ")";
+
+    // Run any pending microtasks first — that's where webContents
+    // .executeJavaScript promises resolve and write to globalThis._pR<id>.
+    if (g_r.Isolate_PerformMicrotaskCheckpoint) {
+        g_r.Isolate_PerformMicrotaskCheckpoint(iso);
+    }
+
+    std::string raw, err;
+    bool ok = run_script_get_string(iso, ctx, js, raw, err);
+    g_r.HandleScope_dtor(hs_buf);
+    if (!ok) {
+        positron::log::warn("renderer poll script failed: " + err);
+        return;
+    }
+
+    nlohmann::json results;
+    try { results = nlohmann::json::parse(raw); }
+    catch (...) { positron::log::warn("renderer poll bad JSON"); return; }
+
+    auto now = std::chrono::steady_clock::now();
+    std::vector<PendingRenderer> survivors;
+    survivors.reserve(snapshot.size());
+
+    for (auto& p : snapshot) {
+        std::string key = std::to_string(p.id);
+        if (results.contains(key)) {
+            // Resolved.
+            positron::v8b::V8Bridge::EvalOutcome o{};
+            apply_wrapper_json(results[key].get<std::string>(), o);
+            try { p.done(std::move(o)); } catch (...) {}
+        } else if (now > p.deadline) {
+            positron::v8b::V8Bridge::EvalOutcome o{};
+            o.ok = false;
+            o.error_message = "renderer eval timed out";
+            try { p.done(std::move(o)); } catch (...) {}
+        } else {
+            survivors.push_back(std::move(p));
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(g_renderer_mu);
+        // Drop the IDs we just resolved — only keep entries still pending
+        // (others may have been added between the snapshot and now; we leave
+        // those untouched).
+        std::vector<PendingRenderer> kept;
+        kept.reserve(g_renderer_pending.size());
+        for (auto& p : g_renderer_pending) {
+            // Was this id in the snapshot AND still pending? If yes, retain.
+            bool snap = false, survive = false;
+            for (auto& s : snapshot) if (s.id == p.id) { snap = true; break; }
+            if (snap) {
+                for (auto& s : survivors) if (s.id == p.id) { survive = true; break; }
+                if (survive) kept.push_back(std::move(p));
+                // else: resolved/timed out — drop.
+            } else {
+                // Added after we snapshotted; keep.
+                kept.push_back(std::move(p));
+            }
+        }
+        g_renderer_pending = std::move(kept);
+    }
+}
+
+void ensure_poller_running() {
+    bool was = g_poller_started.exchange(true);
+    if (was) return;
+    std::thread([]{
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            {
+                std::lock_guard<std::mutex> lk(g_renderer_mu);
+                if (g_renderer_pending.empty()) continue;
+            }
+            positron::v8b::V8Bridge::instance().run_on_v8_thread(
+                &poll_renderer_pending_on_v8_thread);
+        }
+    }).detach();
+}
+
+} // anonymous
+
+namespace positron::v8b {
+
 bool V8Bridge::eval_async(std::string code, std::function<void(EvalOutcome)> done) {
     if (!g_ready.load(std::memory_order_acquire)) return false;
 
-    // Wrap the user code so the result is always a JSON string. This keeps the
-    // C-side serialisation trivial: just read a UTF-8 string out of V8.
     using nlohmann::json;
     std::string js_string_literal = json(code).dump();
     std::string wrapped =
@@ -272,85 +485,99 @@ bool V8Bridge::eval_async(std::string code, std::function<void(EvalOutcome)> don
 
     return run_on_v8_thread([wrapped = std::move(wrapped), done = std::move(done)]() mutable {
         EvalOutcome out{};
-        out.ok = false;
-
         void* iso = g_r.Isolate_TryGetCurrent();
-        if (!iso) {
-            out.error_message = "v8_bridge: no isolate on this thread";
-            done(std::move(out));
-            return;
-        }
+        if (!iso) { out.error_message = "no isolate on this thread"; done(std::move(out)); return; }
 
         alignas(16) uint8_t hs_buf[kHandleScopeBytes];
         std::memset(hs_buf, 0, sizeof(hs_buf));
         g_r.HandleScope_ctor(hs_buf, iso);
-
-        // Compile/Run accept Local<Context> directly — no need to enter it.
         void* ctx = nullptr;
         g_r.Isolate_GetCurrentContext(iso, &ctx);
         if (!ctx) {
             g_r.HandleScope_dtor(hs_buf);
-            out.error_message = "v8_bridge: no current context";
-            done(std::move(out));
-            return;
+            out.error_message = "no current context"; done(std::move(out)); return;
         }
 
-        void* src = nullptr;
-        g_r.String_NewFromUtf8(&src, iso, wrapped.c_str(), 0, static_cast<int>(wrapped.size()));
-        if (!src) {
-            g_r.HandleScope_dtor(hs_buf);
-            out.error_message = "v8_bridge: NewFromUtf8 failed";
-            done(std::move(out));
-            return;
-        }
-
-        void* script = nullptr;
-        g_r.Script_Compile(&script, ctx, src, nullptr);
-        if (!script) {
-            g_r.HandleScope_dtor(hs_buf);
-            out.error_message = "v8_bridge: compile failed";
-            done(std::move(out));
-            return;
-        }
-
-        void* result = nullptr;
-        g_r.Script_Run(script, &result, ctx);
-        if (!result) {
-            g_r.HandleScope_dtor(hs_buf);
-            out.error_message = "v8_bridge: run failed";
-            done(std::move(out));
-            return;
-        }
-
-        // The wrapper guarantees the result is a JS string we can read directly.
-        char small[4096];
-        size_t processed = 0;
-        size_t n = g_r.String_WriteUtf8V2(result, iso, small, sizeof(small) - 1, 0, &processed);
-        std::string s(small, small + n);
+        std::string raw, err;
+        bool ok = run_script_get_string(iso, ctx, wrapped, raw, err);
         g_r.HandleScope_dtor(hs_buf);
+        if (!ok) { out.error_message = err; done(std::move(out)); return; }
 
-        try {
-            auto j = nlohmann::json::parse(s);
-            if (j.contains("error")) {
-                out.ok = false;
-                out.error_message = j["error"].value("message", std::string{});
-                out.error_stack   = j["error"].value("stack",   std::string{});
-            } else {
-                out.ok = true;
-                out.type_tag = j.value("type", std::string{});
-                if (j.contains("value") && !j["value"].is_null()) {
-                    out.json_value = j["value"].dump();
-                } else {
-                    out.json_value = "null";
+        apply_wrapper_json(raw, out);
+        done(std::move(out));
+    });
+}
+
+bool V8Bridge::eval_renderer_async(std::string code, int window_index,
+                                    std::function<void(EvalOutcome)> done) {
+    if (!g_ready.load(std::memory_order_acquire)) return false;
+
+    uint64_t id = g_renderer_id_counter.fetch_add(1, std::memory_order_relaxed);
+    using nlohmann::json;
+    std::string user_src_lit = json(code).dump();
+
+    // Launcher: schedule the renderer call; the .then handlers park the
+    // settled result onto globalThis under a unique key, where the poller
+    // picks it up.
+    std::string key = "_pR" + std::to_string(id);
+    std::string idx = std::to_string(window_index);
+    std::string launcher =
+        std::string{"(function(){"} +
+        "var K='" + key + "';"
+        "try{"
+            "var ws=require('electron').BrowserWindow.getAllWindows();"
+            "var w=ws[" + idx + "];"
+            "if(!w){globalThis[K]=JSON.stringify({error:{message:'no BrowserWindow at index " + idx + " (have '+ws.length+')',stack:''}});return;}"
+            "w.webContents.executeJavaScript(" + user_src_lit + ",true).then("
+                "function(v){try{globalThis[K]=JSON.stringify({type:typeof v,value:v});}"
+                "catch(e){globalThis[K]=JSON.stringify({type:typeof v,value:String(v)});}},"
+                "function(e){globalThis[K]=JSON.stringify({error:{message:String((e&&e.message)||e),stack:String((e&&e.stack)||\"\")}});}"
+            ");"
+        "}catch(e){globalThis[K]=JSON.stringify({error:{message:String((e&&e.message)||e),stack:String((e&&e.stack)||\"\")}});}"
+        "})()";
+
+    PendingRenderer pe;
+    pe.id = id;
+    pe.done = std::move(done);
+    pe.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+
+    {
+        std::lock_guard<std::mutex> lk(g_renderer_mu);
+        g_renderer_pending.push_back(std::move(pe));
+    }
+    ensure_poller_running();
+
+    return run_on_v8_thread([launcher = std::move(launcher), id]() mutable {
+        void* iso = g_r.Isolate_TryGetCurrent();
+        if (!iso) return;
+        alignas(16) uint8_t hs_buf[kHandleScopeBytes];
+        std::memset(hs_buf, 0, sizeof(hs_buf));
+        g_r.HandleScope_ctor(hs_buf, iso);
+        void* ctx = nullptr;
+        g_r.Isolate_GetCurrentContext(iso, &ctx);
+        if (!ctx) {
+            g_r.HandleScope_dtor(hs_buf);
+            std::lock_guard<std::mutex> lk(g_renderer_mu);
+            for (auto it = g_renderer_pending.begin(); it != g_renderer_pending.end(); ++it) {
+                if (it->id == id) {
+                    EvalOutcome o{}; o.error_message = "no current context for launcher";
+                    try { it->done(std::move(o)); } catch (...) {}
+                    g_renderer_pending.erase(it);
+                    return;
                 }
             }
-        } catch (const std::exception& e) {
-            out.ok = false;
-            out.error_message = std::string{"v8_bridge: result parse error: "} + e.what();
-            out.error_stack = s;
+            return;
         }
-
-        done(std::move(out));
+        std::string raw, err;
+        run_script_get_string(iso, ctx, launcher, raw, err);
+        // Drain any microtasks scheduled by the launcher (e.g. .then() chains
+        // on the executeJavaScript promise) — Electron's microtask policy may
+        // be explicit, so we can't rely on Compile/Run auto-running them.
+        if (g_r.Isolate_PerformMicrotaskCheckpoint) {
+            g_r.Isolate_PerformMicrotaskCheckpoint(iso);
+        }
+        g_r.HandleScope_dtor(hs_buf);
+        if (!err.empty()) positron::log::warn("renderer launcher failed: " + err);
     });
 }
 

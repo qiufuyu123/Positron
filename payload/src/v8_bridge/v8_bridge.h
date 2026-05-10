@@ -36,6 +36,16 @@ struct V8Bridge {
     // Schedule eval; `done` is invoked on V8 thread with the outcome.
     // Returns false if bridge is not ready.
     bool eval_async(std::string code, std::function<void(EvalOutcome)> done);
+
+    // Hop into a renderer's main world via webContents.executeJavaScript and
+    // run `code` there. Must be invoked against an Electron MAIN process (the
+    // one that owns BrowserWindow). `window_index` selects which window when
+    // multiple are open. Resolution is asynchronous (a Mojo IPC round-trip);
+    // `done` fires when the renderer-side promise settles or the per-eval
+    // deadline expires.
+    bool eval_renderer_async(std::string code,
+                             int window_index,
+                             std::function<void(EvalOutcome)> done);
 };
 
 } // namespace positron::v8b

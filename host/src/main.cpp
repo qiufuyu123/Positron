@@ -82,15 +82,25 @@ int do_attach_setup(AttachContext& ctx, positron::pipe::Client& client) {
     return 0;
 }
 
-int do_eval(AttachContext& ctx, const std::string& code, uint32_t timeout_ms) {
+struct EvalOpts {
+    std::string world      = "auto";    // "auto" / "node" / "renderer"
+    int         window_idx = 0;         // for world="renderer"
+    uint32_t    timeout_ms = 60000;
+};
+
+int do_eval(AttachContext& ctx, const std::string& code, const EvalOpts& opts) {
     positron::pipe::Client c;
     if (int rc = do_attach_setup(ctx, c); rc != 0) return rc;
 
-    positron::wire::EvalRequest req{1, code, "auto", std::nullopt};
+    positron::wire::EvalRequest req;
+    req.id = 1;
+    req.code = code;
+    req.world = opts.world;
+    if (opts.world == "renderer") req.world_index = opts.window_idx;
     auto t0 = std::chrono::steady_clock::now();
     c.send(positron::wire::encode_eval_request(req));
 
-    auto resp = c.recv(timeout_ms);
+    auto resp = c.recv(opts.timeout_ms);
     auto t1 = std::chrono::steady_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     if (!resp) {
@@ -115,11 +125,11 @@ int do_attach_repl(AttachContext& ctx) {
     return positron::repl::run(c, ctx.pid);
 }
 
-int do_run_script(AttachContext& ctx, const std::string& script_path) {
+int do_run_script(AttachContext& ctx, const std::string& script_path, const EvalOpts& opts) {
     std::ifstream f(script_path);
     if (!f) { std::cerr << "cannot open script: " << script_path << "\n"; return 7; }
     std::stringstream ss; ss << f.rdbuf();
-    return do_eval(ctx, ss.str(), 60000);
+    return do_eval(ctx, ss.str(), opts);
 }
 
 } // anonymous
@@ -147,17 +157,27 @@ int wmain(int argc, wchar_t** argv) {
 
     auto* run_cmd = app.add_subcommand("run", "attach, execute a JS file, exit");
     uint32_t r_pid = 0;
+    int r_rwin = 0;
     std::string r_dll, r_script;
+    bool r_renderer = false;
     run_cmd->add_option("pid", r_pid, "target process ID")->required();
     run_cmd->add_option("script", r_script, "path to .js file")->required();
     run_cmd->add_option("--dll", r_dll, "path to payload.dll");
+    run_cmd->add_flag("--renderer,-r", r_renderer,
+                      "hop into the BrowserWindow's renderer main world via webContents.executeJavaScript");
+    run_cmd->add_option("--window", r_rwin, "BrowserWindow index when --renderer is set");
 
     auto* eval = app.add_subcommand("eval", "attach, evaluate one expression, exit");
     uint32_t e_pid = 0;
+    int e_rwin = 0;
     std::string e_dll, e_expr;
+    bool e_renderer = false;
     eval->add_option("pid", e_pid, "target process ID")->required();
     eval->add_option("expr", e_expr, "JS expression")->required();
     eval->add_option("--dll", e_dll, "path to payload.dll");
+    eval->add_flag("--renderer,-r", e_renderer,
+                   "hop into the BrowserWindow's renderer main world via webContents.executeJavaScript");
+    eval->add_option("--window", e_rwin, "BrowserWindow index when --renderer is set");
 
     try { app.parse(argc, argv_utf8.data()); }
     catch (const CLI::ParseError& e) { return app.exit(e); }
@@ -170,11 +190,15 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (*run_cmd) {
         AttachContext ctx{ r_pid, r_dll.empty() ? default_payload_path() : widen(r_dll) };
-        return do_run_script(ctx, r_script);
+        EvalOpts opts;
+        if (r_renderer) { opts.world = "renderer"; opts.window_idx = r_rwin; }
+        return do_run_script(ctx, r_script, opts);
     }
     if (*eval) {
         AttachContext ctx{ e_pid, e_dll.empty() ? default_payload_path() : widen(e_dll) };
-        return do_eval(ctx, e_expr, 60000);
+        EvalOpts opts;
+        if (e_renderer) { opts.world = "renderer"; opts.window_idx = e_rwin; }
+        return do_eval(ctx, e_expr, opts);
     }
     return 0;
 }

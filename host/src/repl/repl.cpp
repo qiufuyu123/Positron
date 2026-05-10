@@ -30,19 +30,31 @@ static void print_event(replxx::Replxx& rx, const Json& msg) {
 static void print_help(replxx::Replxx& rx) {
     rx.print(
         "Commands:\n"
-        "  <expression>     evaluate JS in the target's V8 context\n"
-        "  .hook <symbol>   install a runtime hook on a target export\n"
-        "  .detach          disable hooks, close the connection, exit REPL\n"
-        "  .quit            same as .detach\n"
-        "  .help            this message\n"
-        "Anything else is treated as a JS expression.\n");
+        "  <expression>          eval JS in the current world (see .world)\n"
+        "  .world auto|node      eval directly in target's main V8 context (default)\n"
+        "  .world renderer[:N]   eval in BrowserWindow[N]'s renderer main world\n"
+        "                        via webContents.executeJavaScript\n"
+        "  .hook <symbol>        install a runtime hook on a target export\n"
+        "  .detach / .quit       disable hooks, close, exit REPL\n"
+        "  .help                 this message\n");
 }
 
 int run(positron::pipe::Client& c, uint32_t target_pid) {
     replxx::Replxx rx;
     rx.set_max_history_size(1000);
     rx.set_word_break_characters(" \t.,()[]{}'\"");
-    std::string prompt = "positron[" + std::to_string(target_pid) + "]> ";
+
+    // Per-session world state. Toggled by `.world ...`.
+    std::string world = "auto";
+    int window_index  = 0;
+
+    auto build_prompt = [&]{
+        std::string p = "positron[" + std::to_string(target_pid);
+        if (world == "renderer") {
+            p += "/r" + std::to_string(window_index);
+        }
+        return p + "]> ";
+    };
 
     rx.print("Type .help for commands, .detach to quit.\n");
 
@@ -59,7 +71,7 @@ int run(positron::pipe::Client& c, uint32_t target_pid) {
             break;
         }
 
-        const char* line_c = rx.input(prompt);
+        const char* line_c = rx.input(build_prompt());
         if (!line_c) break;
         std::string line = line_c;
         if (line.empty()) continue;
@@ -77,12 +89,40 @@ int run(positron::pipe::Client& c, uint32_t target_pid) {
             rx.print(("[hook.install queued: " + req.symbol + "]\n").c_str());
             continue;
         }
+        if (line.rfind(".world", 0) == 0) {
+            // `.world auto`, `.world node`, `.world renderer`, `.world renderer:2`
+            std::string arg = line.size() > 6 ? line.substr(7) : "";
+            if (arg.empty()) {
+                rx.print(("current world: " + world +
+                          (world == "renderer" ? (":" + std::to_string(window_index)) : "") +
+                          "\n").c_str());
+                continue;
+            }
+            std::string base = arg;
+            int idx = 0;
+            auto colon = arg.find(':');
+            if (colon != std::string::npos) {
+                base = arg.substr(0, colon);
+                try { idx = std::stoi(arg.substr(colon + 1)); } catch (...) { idx = 0; }
+            }
+            if (base == "auto" || base == "node" || base == "renderer") {
+                world = base;
+                window_index = idx;
+                rx.print(("[world = " + world +
+                          (world == "renderer" ? (":" + std::to_string(window_index)) : "") +
+                          "]\n").c_str());
+            } else {
+                rx.print(("unknown world '" + arg + "' (use auto / node / renderer[:N])\n").c_str());
+            }
+            continue;
+        }
 
-        // Default: eval
+        // Default: eval in current world
         wire::EvalRequest req;
         req.id = g_id_counter.fetch_add(1);
         req.code = line;
-        req.world = "auto";
+        req.world = world;
+        if (world == "renderer") req.world_index = window_index;
         c.send(wire::encode_eval_request(req));
 
         bool got = false;
