@@ -5,6 +5,8 @@
   </Configurations>
   <Project Path="host/host.vcxproj" Id="f2087b6f-1b68-443d-8ef1-0dd82dbf7b10" />
   <Project Path="payload/payload.vcxproj" Id="cba9ce88-817f-4631-a453-8763934721ce" />
+  <Project Path="sdk/positron_sdk.vcxproj" Id="188c8ba8-0680-44ea-9ac1-ea4461819a0f" />
+  <Project Path="examples/eval_example/eval_example.vcxproj" Id="dcb9aa7a-1295-4c4d-b726-f89bf9ecd854" />
   <Project Path="tests/unit_host/unit_host.vcxproj" Id="02b939fa-2350-40c5-a526-277ad7c0e4e2" />
   <Project Path="tests/unit_payload/unit_payload.vcxproj" Id="fce1f18c-15a8-4d04-9941-21434af1f959" />
   <Project Path="tests/integration/integration.vcxproj" Id="3072d39f-6c76-4351-bc09-e816f98b0bd3" />
