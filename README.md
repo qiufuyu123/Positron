@@ -1,83 +1,108 @@
-# positron
+# Positron
 
-**[English](#english) | [中文](#中文)**
+> Runtime JS injection toolkit for Electron apps on Windows
 
----
+[中文文档](docs/README_CN.md)
 
-<a id="english"></a>
+Attach to any running Electron application, evaluate JavaScript in its main or renderer process, and extend functionality through a live module system — without restarting the target or modifying its files.
 
-## English
+![Positron Demo](imgs/img1.png)
+*Process listing and the demo fixture app*
 
-Windows-only Electron process injection toolkit. Attach to any running Electron app, evaluate JavaScript in its main or renderer process, and extend functionality through a live module system — all without restarting the target.
+## Features
 
-### How it works
+- **Attach to running processes** — no restart, no source modification
+- **Eval in main or renderer** — switch worlds with `.world renderer`
+- **Module system** — load/unload JS modules with lifecycle hooks
+- **Self-unmapping DLL** — payload erases itself from memory after bootstrap
+- **Reconnect without re-inject** — JS server survives host disconnection
+- **x64 and x86** support
+- **C++ SDK** — static library for programmatic integration
+
+## Quick Start
+
+```bash
+# Build (requires VS2022+ C++20, Node.js)
+npm install
+msbuild positron.slnx /p:Configuration=Debug /p:Platform=x64 /m
+
+# List Electron processes
+host.exe list
+
+# Attach and start REPL
+host.exe attach <pid>
+```
+
+## How It Works
 
 ```
 host.exe ──attach──> target (Electron)
    │                    │
-   │  1. inject payload.dll (BlackBone manual map, no loader)
-   │  2. payload bootstraps a JS TCP server inside V8 main thread
-   │  3. payload.dll self-unmaps from memory
+   │  1. Manual-map payload.dll (BlackBone, bypasses loader checks)
+   │  2. Resolve V8 symbols via fuzzy PE export matching
+   │  3. Bootstrap a JS TCP server in V8 main thread
+   │  4. payload.dll self-unmaps (VEH removal + VirtualFree trampoline)
    │                    │
-   │  4. host connects to JS server (length-prefixed JSON over TCP)
-   │  5. eval / renderer hop / module load all go through JS server
+   │  5. Pure JS communication (length-prefixed JSON over TCP)
    │                    │
    └────────────────────┘
 ```
 
-**v2 transport** (default): After bootstrap, the native DLL removes BlackBone's VEH + scratch pages, then frees its own image via a shellcode trampoline. All subsequent communication is pure JS. Host can disconnect and reconnect without re-injecting.
+After bootstrap, the native DLL is completely gone from memory. Subsequent `host.exe attach` detects the live JS server and skips injection.
 
-**Native transport** (`--native`): Keeps the C++ IPC server alive for native-symbol hooking via BlackBone runtime detours.
+## Usage
 
-### Build
+### Interactive REPL
 
-Requires Visual Studio 2022+ (v145 toolset, C++20) and Node.js (for terser minification).
+![REPL Demo](imgs/img2.png)
+*Attaching, entering renderer world, reading document.title*
 
 ```
-npm install
-msbuild positron.slnx /p:Configuration=Debug /p:Platform=x64 /m
-msbuild positron.slnx /p:Configuration=Debug /p:Platform=Win32 /m
+host.exe attach <pid>
+
+positron[pid]> 1+1
+2
+positron[pid]> process.versions.electron
+"42.0.1"
+positron[pid]> .world renderer
+[world = renderer:0]
+positron[pid/r0]> document.title
+"Positron Demo"
 ```
 
-Outputs: `host.exe`, `payload.dll`, `bootstrap.js`, `positron_sdk.lib`
+### Live DOM Manipulation
 
-### Usage
+![DOM Injection](imgs/img3.png)
+*Modifying the page title from the REPL*
 
-```bash
-host.exe list                              # list Electron processes
-host.exe attach <pid>                      # interactive REPL
-host.exe eval <pid> "1+1"                  # one-shot eval
-host.exe eval -r <pid> "document.title"    # renderer eval
-host.exe run <pid> script.js               # run a .js file
-host.exe attach --native <pid>             # native mode (for .hook)
+```
+positron[pid/r0]> document.title = "injected"
+"injected"
 ```
 
-### REPL commands
+### Module System
 
-| Command | Description |
-|---|---|
-| `<expression>` | Evaluate JS in current world |
-| `.world auto\|node` | Eval in main V8 context (default) |
-| `.world renderer[:N]` | Eval in BrowserWindow[N] renderer |
-| `.mod load <file>` | Load a JS module into the target |
-| `.mod unload <name>` | Unload a module by name |
-| `.mod list` | List loaded modules |
-| `.dump [name]` | (renderer) Save page HTML to file |
-| `.hook <symbol>` | (native only) Install detour on export |
-| `.detach` | Disconnect and exit |
+![Module Demo](imgs/img4.png)
+*Demo module loaded: title changed, status badge flipped, log entries streaming*
 
-### Module system
+```
+positron[pid]> .mod load examples\modules\demo.js
+[mod.load] {"loaded":"demo"}
+positron[pid]> .mod list
+[modules] ["demo"]
+positron[pid]> .mod unload demo
+[mod.unload] {"unloaded":"demo"}
+```
 
-Modules are `.js` files evaluated in the target:
+Modules have full lifecycle management:
 
 ```js
 (function() {
   return {
     name: 'my-module',
     onLoad: function(api) {
-      api.log('loaded');
-      api.eval('process.pid').then(function(pid) {
-        api.send({ pid: pid });
+      api.evalRenderer('document.title', 0).then(function(t) {
+        api.log('title: ' + t);
       });
     },
     onUnload: function(api) {
@@ -87,152 +112,69 @@ Modules are `.js` files evaluated in the target:
 })()
 ```
 
-**Module API**: `api.eval(code)`, `api.evalRenderer(code, idx)`, `api.send(msg)`, `api.log(str)`, `api.getElectron()`, `api.require`
+**Module API:** `api.eval()`, `api.evalRenderer()`, `api.send()`, `api.log()`, `api.getElectron()`, `api.require`
 
-### SDK
-
-```cpp
-#include <positron/sdk.h>
-
-positron::sdk::Session s;
-s.attach(pid);                    // v2 by default
-auto r = s.eval("1+1");          // r.json_value == "2"
-s.detach();
-```
-
-### Architecture
-
-```
-positron/
-  host/              CLI + REPL (host.exe)
-  payload/           Injected DLL — V8 bridge, IPC, self-unmap teardown
-  sdk/               Static lib, public headers, bootstrap.js
-  shared/wire/       Length-prefixed JSON framing
-  examples/          SDK consumer, JS modules
-  tests/             Integration + unit tests
-  third_party/       BlackBone, nlohmann/json, replxx, CLI11, MinHook
-```
-
----
-
-<a id="中文"></a>
-
-## 中文
-
-Windows 平台的 Electron 进程注入工具。可以附加到任意运行中的 Electron 应用，在主进程或渲染进程中执行 JavaScript，并通过模块系统扩展功能——无需重启目标程序。
-
-### 工作原理
-
-```
-host.exe ──attach──> 目标进程 (Electron)
-   │                    │
-   │  1. 注入 payload.dll（BlackBone 手动映射，绕过加载器）
-   │  2. payload 在 V8 主线程中启动 JS TCP 服务
-   │  3. payload.dll 从内存中自卸载
-   │                    │
-   │  4. host 连接 JS 服务（TCP，长度前缀 + JSON）
-   │  5. eval / 渲染进程跳转 / 模块加载均通过 JS 服务
-   │                    │
-   └────────────────────┘
-```
-
-**v2 传输**（默认）：bootstrap 完成后，原生 DLL 移除 BlackBone 的 VEH 和临时页面，然后通过 shellcode 跳板释放自身镜像。后续通信完全走 JS。host 可以断开重连而无需重新注入。
-
-**原生传输**（`--native`）：保留 C++ IPC 服务，用于通过 BlackBone 运行时 detour 挂钩原生导出函数。
-
-### 构建
-
-需要 Visual Studio 2022+（v145 工具集，C++20）和 Node.js（用于 terser 压缩）。
-
-```
-npm install
-msbuild positron.slnx /p:Configuration=Debug /p:Platform=x64 /m
-msbuild positron.slnx /p:Configuration=Debug /p:Platform=Win32 /m
-```
-
-产物：`host.exe`、`payload.dll`、`bootstrap.js`、`positron_sdk.lib`
-
-### 使用
+### One-shot Commands
 
 ```bash
-host.exe list                              # 列出 Electron 进程
-host.exe attach <pid>                      # 交互式 REPL
-host.exe eval <pid> "1+1"                  # 单次 eval
-host.exe eval -r <pid> "document.title"    # 渲染进程 eval
-host.exe run <pid> script.js               # 执行 .js 文件
-host.exe attach --native <pid>             # 原生模式（支持 .hook）
+host.exe eval <pid> "1+1"                  # main process
+host.exe eval -r <pid> "document.title"    # renderer
+host.exe run <pid> script.js               # run a JS file
 ```
 
-### REPL 命令
+### Native Mode
 
-| 命令 | 说明 |
+For hooking native exports (requires DLL to stay mapped):
+
+```bash
+host.exe attach --native <pid>
+positron(native)[pid]> .hook SomeExport
+```
+
+## REPL Commands
+
+| Command | Description |
 |---|---|
-| `<表达式>` | 在当前 world 中执行 JS |
-| `.world auto\|node` | 在主进程 V8 上下文中执行（默认） |
-| `.world renderer[:N]` | 在 BrowserWindow[N] 渲染进程中执行 |
-| `.mod load <文件>` | 将 JS 模块加载到目标进程 |
-| `.mod unload <名称>` | 按名称卸载模块 |
-| `.mod list` | 列出已加载的模块 |
-| `.dump [名称]` | （渲染模式）将页面 HTML 保存到文件 |
-| `.hook <符号>` | （仅原生模式）在导出函数上安装 detour |
-| `.detach` | 断开连接并退出 |
+| `.world auto\|renderer[:N]` | Switch eval target |
+| `.mod load <file>` | Load JS module |
+| `.mod unload <name>` | Unload module |
+| `.mod list` | List loaded modules |
+| `.dump [name]` | Save page HTML |
+| `.hook <symbol>` | (native) Install detour |
+| `.detach` | Disconnect |
 
-### 模块系统
+## Architecture
 
-模块是在目标进程中执行的 `.js` 文件：
-
-```js
-(function() {
-  return {
-    name: 'my-module',
-    onLoad: function(api) {
-      api.log('已加载');
-      api.eval('process.pid').then(function(pid) {
-        api.send({ pid: pid });
-      });
-    },
-    onUnload: function(api) {
-      api.log('再见');
-    }
-  };
-})()
+```
+positron/
+  host/           CLI + REPL (host.exe)
+  payload/        Injected DLL — V8 bridge, teardown trampoline
+  sdk/            Static lib, headers, bootstrap.js (terser-minified)
+  shared/wire/    Length-prefixed JSON framing
+  examples/       SDK consumer, JS modules (demo, hello)
+  tests/          Integration + unit tests
+  third_party/    BlackBone, nlohmann/json, replxx, CLI11, MinHook
 ```
 
-**模块 API**：`api.eval(code)`、`api.evalRenderer(code, idx)`、`api.send(msg)`、`api.log(str)`、`api.getElectron()`、`api.require`
+### Self-Unmap Sequence
 
-### SDK
+After JS server confirms alive:
+
+1. Stop detached threads (renderer poller, hook flusher)
+2. `RemoveVectoredExceptionHandler` (BlackBone's VEH)
+3. `VirtualFree` BlackBone scratch pages (~12 KB)
+4. Shellcode trampoline on separate RWX page: `Sleep(500ms)` → `VirtualFree(payload_base)` → `ExitThread(0)`
+
+## SDK
 
 ```cpp
 #include <positron/sdk.h>
 
 positron::sdk::Session s;
-s.attach(pid);                    // 默认 v2 传输
-auto r = s.eval("1+1");          // r.json_value == "2"
+s.attach(pid);               // v2 by default
+auto r = s.eval("1+1");     // r.json_value == "2"
 s.detach();
 ```
-
-### 项目结构
-
-```
-positron/
-  host/              命令行工具 + REPL (host.exe)
-  payload/           注入 DLL — V8 桥接、IPC、自卸载
-  sdk/               静态库、公共头文件、bootstrap.js
-  shared/wire/       长度前缀 JSON 帧协议
-  examples/          SDK 使用示例、JS 模块
-  tests/             集成测试 + 单元测试
-  third_party/       BlackBone, nlohmann/json, replxx, CLI11, MinHook
-```
-
-### v2 自卸载流程
-
-JS 服务确认存活后，payload 执行以下清理：
-
-1. 停止分离线程（渲染轮询器、hook 刷新器）
-2. `RemoveVectoredExceptionHandler`（移除 BlackBone 的 VEH）
-3. `VirtualFree` 释放 BlackBone 临时页面（约 12 KB）
-4. 在独立 RWX 页上生成跳板线程：`Sleep(500ms)` → `VirtualFree(payload基址)` → `ExitThread(0)`
-5. 后续 `host.exe attach` 检测到存活的 JS 服务 → 跳过注入
 
 ## License
 

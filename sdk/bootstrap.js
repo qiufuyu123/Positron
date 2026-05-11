@@ -306,9 +306,16 @@ try {
     return { unloaded: name };
   }
 
+  function loadModuleFromFile(filePath) {
+    var fs = req('fs');
+    var code = fs.readFileSync(filePath, 'utf8');
+    return loadModuleFromCode(code);
+  }
+
   globalThis.__positron_v2_internal = {
     server: server, modules: modules,
     loadModule: loadModuleFromCode,
+    loadModuleFromFile: loadModuleFromFile,
     unloadModule: unloadModuleByName
   };
 

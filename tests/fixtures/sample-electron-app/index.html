@@ -1,10 +1,186 @@
 <!doctype html>
-<html><head><title>positron fixture</title></head>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>positron fixture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px;
+  }
+  .header {
+    text-align: center;
+    margin-bottom: 40px;
+  }
+  .header h1 {
+    font-size: 42px;
+    font-weight: 700;
+    background: linear-gradient(90deg, #00d2ff, #7b2ff7);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 8px;
+  }
+  .header .subtitle {
+    font-size: 16px;
+    color: #8888aa;
+  }
+  .dashboard {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    max-width: 720px;
+    width: 100%;
+    margin-bottom: 40px;
+  }
+  .card {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 32px rgba(123,47,247,0.2);
+  }
+  .card .label { font-size: 12px; text-transform: uppercase; color: #8888aa; margin-bottom: 8px; letter-spacing: 1px; }
+  .card .value { font-size: 28px; font-weight: 700; color: #fff; }
+  .card .value.accent-blue { color: #00d2ff; }
+  .card .value.accent-purple { color: #7b2ff7; }
+  .card .value.accent-green { color: #00e676; }
+  .status-bar {
+    max-width: 720px;
+    width: 100%;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 20px 28px;
+    margin-bottom: 30px;
+  }
+  .status-bar .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .status-bar .row:last-child { margin-bottom: 0; }
+  .status-bar .key { color: #8888aa; font-size: 14px; }
+  .status-bar .val { color: #fff; font-size: 14px; font-family: 'Consolas', monospace; }
+  .log-panel {
+    max-width: 720px;
+    width: 100%;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 16px 20px;
+    font-family: 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .log-panel .log-line { color: #7b8794; }
+  .log-panel .log-line .ts { color: #555; }
+  .log-panel .log-line .msg { color: #a0e0a0; }
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .badge-ok { background: rgba(0,230,118,0.15); color: #00e676; }
+  .badge-idle { background: rgba(255,255,255,0.08); color: #8888aa; }
+</style>
+</head>
 <body>
+
+<div class="header">
+  <h1 id="title">Positron Demo</h1>
+  <div class="subtitle" id="subtitle">Electron Process Injection Toolkit</div>
+</div>
+
+<div class="dashboard">
+  <div class="card">
+    <div class="label">Uptime</div>
+    <div class="value accent-blue" id="uptime">0s</div>
+  </div>
+  <div class="card">
+    <div class="label">Events</div>
+    <div class="value accent-purple" id="event-count">0</div>
+  </div>
+  <div class="card">
+    <div class="label">Status</div>
+    <div class="value"><span class="badge badge-idle" id="status-badge">IDLE</span></div>
+  </div>
+</div>
+
+<div class="status-bar">
+  <div class="row">
+    <span class="key">Process ID</span>
+    <span class="val" id="info-pid">-</span>
+  </div>
+  <div class="row">
+    <span class="key">Electron</span>
+    <span class="val" id="info-electron">-</span>
+  </div>
+  <div class="row">
+    <span class="key">Node.js</span>
+    <span class="val" id="info-node">-</span>
+  </div>
+  <div class="row">
+    <span class="key">User Agent</span>
+    <span class="val" id="info-ua">-</span>
+  </div>
+</div>
+
+<div class="log-panel" id="log-panel">
+  <div class="log-line"><span class="ts">[00:00]</span> <span class="msg">System initialized. Waiting for injection...</span></div>
+</div>
+
 <script>
   window.__positron_test_marker__ = "ok";
-  window.__counter__ = 0;
-  setInterval(() => { window.__counter__++; }, 100);
+
+  // Live uptime counter
+  var startTime = Date.now();
+  var eventCount = 0;
+
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+  function formatTime(ms) {
+    var s = Math.floor(ms / 1000);
+    var m = Math.floor(s / 60); s %= 60;
+    var h = Math.floor(m / 60); m %= 60;
+    return (h ? h + 'h ' : '') + (m ? m + 'm ' : '') + s + 's';
+  }
+  function logTs() {
+    var d = new Date();
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  // Update uptime every second
+  setInterval(function() {
+    document.getElementById('uptime').textContent = formatTime(Date.now() - startTime);
+  }, 1000);
+
+  // Append to visible log
+  window.__addLog = function(msg) {
+    eventCount++;
+    document.getElementById('event-count').textContent = eventCount;
+    var panel = document.getElementById('log-panel');
+    var line = document.createElement('div');
+    line.className = 'log-line';
+    line.innerHTML = '<span class="ts">[' + logTs() + ']</span> <span class="msg">' + msg + '</span>';
+    panel.appendChild(line);
+    panel.scrollTop = panel.scrollHeight;
+  };
+
+  // Fill system info (won't have process in renderer with contextIsolation,
+  // but navigator info works)
+  document.getElementById('info-ua').textContent = navigator.userAgent.substring(0, 60) + '...';
 </script>
-<h1 id="title">Positron Fixture</h1>
-</body></html>
+
+</body>
+</html>

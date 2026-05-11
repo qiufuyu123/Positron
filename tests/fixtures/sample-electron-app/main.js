@@ -12,17 +12,20 @@ global.__positron_fixture__ = { hello: 'main' };
 
 app.whenReady().then(() => {
   const w = new BrowserWindow({
-    width: 800, height: 600,
+    width: 900, height: 700,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      // sandbox:false so positron's payload (mapped via Blackbone) can open
-      // a TCP socket back to the host. With Chromium's renderer sandbox on,
-      // socket()/CreateEventW with Local\ namespace are blocked — that path
-      // would need a Mojo-aware injector or pre-duplicated handles. v1 ships
-      // sandbox-off support; sandbox-on is a future task.
       sandbox: false,
     }
   });
   w.loadFile(path.join(__dirname, 'index.html'));
+
+  w.webContents.on('did-finish-load', () => {
+    w.webContents.executeJavaScript(`
+      document.getElementById('info-pid').textContent = '${process.pid}';
+      document.getElementById('info-electron').textContent = '${process.versions.electron}';
+      document.getElementById('info-node').textContent = '${process.versions.node}';
+    `);
+  });
 });
