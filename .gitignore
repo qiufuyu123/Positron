@@ -59,5 +59,9 @@ desktop.ini
 *.swp
 *~
 
-# Test fixture node_modules
+# Node modules (root terser + test fixtures)
+node_modules/
 tests/fixtures/**/node_modules/
+
+# Private modules
+examples/modules/json_replace.js

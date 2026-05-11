@@ -55,13 +55,13 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;REPLXX_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(SolutionDir)shared;$(SolutionDir)third_party;$(SolutionDir)third_party\replxx\include;$(SolutionDir)third_party\cli11;$(SolutionDir)third_party\Blackbone\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(SolutionDir)sdk\include;$(SolutionDir)third_party\replxx\include;$(SolutionDir)third_party\cli11;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(SolutionDir)third_party\Blackbone\lib\$(Platform)\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>BlackBone.lib;dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(OutDir);$(SolutionDir)third_party\Blackbone\lib\$(Platform)\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>positron_sdk.lib;BlackBone.lib;dbghelp.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
@@ -73,22 +73,20 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;REPLXX_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(SolutionDir)shared;$(SolutionDir)third_party;$(SolutionDir)third_party\replxx\include;$(SolutionDir)third_party\cli11;$(SolutionDir)third_party\Blackbone\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(SolutionDir)sdk\include;$(SolutionDir)third_party\replxx\include;$(SolutionDir)third_party\cli11;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(SolutionDir)third_party\Blackbone\lib\$(Platform)\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>BlackBone.lib;dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(OutDir);$(SolutionDir)third_party\Blackbone\lib\$(Platform)\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>positron_sdk.lib;BlackBone.lib;dbghelp.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <!-- Host-only sources. injector / pipe_client / process_enum / wire all
+         live in the SDK static lib now (link-time dependency below). -->
     <ClCompile Include="src\main.cpp" />
-    <ClCompile Include="src\process_enum\process_enum.cpp" />
-    <ClCompile Include="src\injector\injector.cpp" />
-    <ClCompile Include="src\pipe_client\pipe_client.cpp" />
     <ClCompile Include="src\repl\repl.cpp" />
-    <ClCompile Include="..\shared\wire\wire.cpp" />
     <ClCompile Include="..\third_party\replxx\src\ConvertUTF.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level1</WarningLevel>
@@ -167,7 +165,23 @@
       <SDLCheck>false</SDLCheck>
     </ClCompile>
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\sdk\positron_sdk.vcxproj">
+      <Project>{188C8BA8-0680-44EA-9AC1-EA4461819A0F}</Project>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <!-- Minify + ship the v2 bootstrap JS next to host.exe. terser runs
+       only when the source is newer than the output. The SDK reads the
+       minified copy at attach time; edit sdk/bootstrap.js, rebuild, done. -->
+  <Target Name="MinifyBootstrapJs" AfterTargets="Build"
+          Inputs="$(SolutionDir)sdk\bootstrap.js"
+          Outputs="$(OutDir)bootstrap.js">
+    <Exec Command="npx terser &quot;$(SolutionDir)sdk\bootstrap.js&quot; --compress --mangle --output &quot;$(OutDir)bootstrap.js&quot;"
+          WorkingDirectory="$(SolutionDir)"
+          StandardOutputImportance="low" />
+    <Message Text="bootstrap.js minified -> $(OutDir)bootstrap.js" Importance="high" />
+  </Target>
 </Project>

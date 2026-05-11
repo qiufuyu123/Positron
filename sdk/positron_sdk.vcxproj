@@ -48,6 +48,8 @@
     <!-- SDK glue -->
     <ClCompile Include="src\process.cpp" />
     <ClCompile Include="src\session.cpp" />
+    <ClCompile Include="src\bootstrap_v2.cpp" />
+    <ClInclude Include="src\bootstrap_v2.h" />
     <!-- Re-used host modules -->
     <ClCompile Include="..\host\src\injector\injector.cpp" />
     <ClCompile Include="..\host\src\pipe_client\pipe_client.cpp" />

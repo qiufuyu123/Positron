@@ -18,6 +18,11 @@ struct Server {
     void start(uint32_t pid, Handler on_command);
     void push(const positron::wire::Json& msg);
     void stop();
+    // Like stop() but does NOT join the accept/writer threads. Safe to call
+    // from inside the command handler (which runs on accept_thread itself,
+    // so a join would deadlock / be UB). The threads exit naturally as the
+    // socket closes and the running flag flips.
+    void request_stop();
     bool is_connected() const;
 };
 

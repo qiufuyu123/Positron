@@ -53,6 +53,56 @@ struct Client::Impl {
 
     ~Impl() { close(); }
 
+    ConnectResult connect_to(uint16_t port, uint32_t timeout_ms) {
+        SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (s == INVALID_SOCKET)
+            return ConnectError{"socket() failed: " + std::to_string(::WSAGetLastError())};
+
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(port);
+
+        u_long nb = 1;
+        ::ioctlsocket(s, FIONBIO, &nb);
+        int rc = ::connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        if (rc != 0) {
+            int err = ::WSAGetLastError();
+            if (err != WSAEWOULDBLOCK) {
+                ::closesocket(s);
+                return ConnectError{"connect(127.0.0.1:" + std::to_string(port) +
+                                    ") failed: " + std::to_string(err)};
+            }
+            fd_set ws; FD_ZERO(&ws); FD_SET(s, &ws);
+            timeval tv{};
+            tv.tv_sec  = static_cast<long>(timeout_ms / 1000);
+            tv.tv_usec = static_cast<long>((timeout_ms % 1000) * 1000);
+            int sel = ::select(0, nullptr, &ws, nullptr, &tv);
+            if (sel <= 0) {
+                ::closesocket(s);
+                return ConnectError{"connect timeout to 127.0.0.1:" + std::to_string(port)};
+            }
+            int so_err = 0; int so_len = sizeof(so_err);
+            ::getsockopt(s, SOL_SOCKET, SO_ERROR,
+                         reinterpret_cast<char*>(&so_err), &so_len);
+            if (so_err != 0) {
+                ::closesocket(s);
+                return ConnectError{"connect failed: " + std::to_string(so_err)};
+            }
+        }
+        nb = 0;
+        ::ioctlsocket(s, FIONBIO, &nb);
+
+        BOOL nodelay = TRUE;
+        ::setsockopt(s, IPPROTO_TCP, TCP_NODELAY,
+                     reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+
+        conn = s;
+        open = true;
+        reader = std::thread([this]{ this->run_reader(); });
+        return Connected{};
+    }
+
     ConnectResult connect(uint32_t pid, uint32_t timeout_ms) {
         listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (listener == INVALID_SOCKET)
@@ -180,6 +230,7 @@ struct Client::Impl {
 Client::Client() : p(new Impl) {}
 Client::~Client() { delete p; }
 ConnectResult Client::connect(uint32_t pid, uint32_t timeout_ms) { return p->connect(pid, timeout_ms); }
+ConnectResult Client::connect_to(uint16_t port, uint32_t timeout_ms) { return p->connect_to(port, timeout_ms); }
 void Client::send(const Json& j) { p->send(j); }
 std::optional<Json> Client::recv(uint32_t timeout_ms) { return p->recv(timeout_ms); }
 void Client::close() { p->close(); }

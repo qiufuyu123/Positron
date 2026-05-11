@@ -1,8 +1,7 @@
-#include "injector/injector.h"
-#include "pipe_client/pipe_client.h"
-#include "process_enum/process_enum.h"
 #include "repl/repl.h"
-#include <wire/wire.h>
+
+#include <positron/sdk.h>
+
 #include <CLI11.hpp>
 #include <Windows.h>
 #include <chrono>
@@ -11,132 +10,118 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-
-using positron::wire::Json;
+#include <thread>
 
 namespace {
 
 std::wstring widen(const std::string& s) {
     if (s.empty()) return {};
     int n = ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    std::wstring out(n - 1, L'\0');
-    ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), n);
-    return out;
+    std::wstring w(n - 1, L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
 }
 
 std::string narrow(const std::wstring& w) {
     if (w.empty()) return {};
     int n = ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string out(n - 1, '\0');
-    ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, out.data(), n, nullptr, nullptr);
-    return out;
-}
-
-// Resolve payload.dll. Defaults to <host.exe>\..\payload.dll. Allow override
-// via --dll <path>.
-std::wstring default_payload_path() {
-    wchar_t buf[MAX_PATH] = {};
-    ::GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    return (std::filesystem::path{buf}.parent_path() / L"payload.dll").wstring();
+    std::string s(n - 1, '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr);
+    return s;
 }
 
 int do_list() {
-    auto entries = positron::proc::enumerate_electron();
-    if (entries.empty()) {
+    auto procs = positron::sdk::list_processes();
+    if (procs.empty()) {
         std::cerr << "no electron processes found\n";
         return 0;
     }
     std::wcout << L"PID\tTYPE\tEXE\n";
-    for (auto& e : entries) {
-        std::wcout << e.pid << L"\t"
-                   << positron::proc::type_name(e.type) << L"\t"
-                   << e.exe_name << L"\n";
+    for (auto& p : procs) {
+        std::wcout << p.pid << L"\t"
+                   << positron::sdk::type_name(p.type) << L"\t"
+                   << p.exe_name << L"\n";
     }
     return 0;
 }
 
-struct AttachContext {
-    uint32_t pid;
-    std::wstring dll;
+struct AttachArgs {
+    uint32_t                pid = 0;
+    std::wstring            dll;       // empty -> SDK default (next to host.exe)
+    positron::sdk::Transport transport = positron::sdk::Transport::V2;
 };
 
-int do_attach_setup(AttachContext& ctx, positron::pipe::Client& client) {
-    auto inject_result = positron::injector::inject({ctx.pid, ctx.dll, 10000});
-    if (auto* e = std::get_if<positron::injector::Error>(&inject_result)) {
-        std::cerr << "inject FAIL: " << e->message << "\n";
+const char* mode_label(positron::sdk::Transport t) {
+    return t == positron::sdk::Transport::V2 ? "v2" : "native";
+}
+
+void print_unmap_status(positron::sdk::Session& s) {
+    if (s.transport() != positron::sdk::Transport::V2) return;
+    auto base = s.injected_module_base();
+    if (base == 0) {
+        std::cout << "[v2 reattached to existing JS server, no inject]\n";
+        return;
+    }
+    // The payload schedules its self-unmap with a ~500ms delay so all
+    // detached threads can drain. Give it a beat, then probe.
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    std::cout << "[v2 self-unmap " << (s.verify_payload_unmapped() ? "ok" : "PENDING")
+              << " base=0x" << std::hex << base << std::dec << "]\n";
+}
+
+int do_eval(const AttachArgs& a, const std::string& code, const positron::sdk::EvalOptions& opts) {
+    positron::sdk::Session s;
+    if (auto err = s.attach(a.pid, a.dll, a.transport)) {
+        std::cerr << "inject FAIL: " << err->message << "\n";
         return 2;
     }
-    std::cout << "[inject ok]\n";
+    std::cout << "[connected pid=" << a.pid
+              << " transport=" << mode_label(s.transport()) << "]\n";
+    print_unmap_status(s);
 
-    auto cr = client.connect(ctx.pid, 5000);
-    if (auto* e = std::get_if<positron::pipe::ConnectError>(&cr)) {
-        std::cerr << "connect FAIL: " << e->message << "\n";
-        return 3;
-    }
-    auto hello = client.recv(5000);
-    if (!hello) {
-        std::cerr << "no HELLO frame received\n";
-        return 4;
-    }
-    std::cout << "[connected pid=" << ctx.pid << "]\n";
-    return 0;
-}
-
-struct EvalOpts {
-    std::string world      = "auto";    // "auto" / "node" / "renderer"
-    int         window_idx = 0;         // for world="renderer"
-    uint32_t    timeout_ms = 60000;
-};
-
-int do_eval(AttachContext& ctx, const std::string& code, const EvalOpts& opts) {
-    positron::pipe::Client c;
-    if (int rc = do_attach_setup(ctx, c); rc != 0) return rc;
-
-    positron::wire::EvalRequest req;
-    req.id = 1;
-    req.code = code;
-    req.world = opts.world;
-    if (opts.world == "renderer") req.world_index = opts.window_idx;
     auto t0 = std::chrono::steady_clock::now();
-    c.send(positron::wire::encode_eval_request(req));
-
-    auto resp = c.recv(opts.timeout_ms);
+    auto r  = s.eval(code, opts);
     auto t1 = std::chrono::steady_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    if (!resp) {
-        std::cerr << "no eval response (waited " << ms << "ms)\n";
-        return 5;
+
+    int rc = 0;
+    if (r.ok) {
+        std::cout << r.json_value << "\n";
+    } else {
+        std::cerr << "error: " << r.error_message << "\n";
+        if (!r.error_stack.empty()) std::cerr << r.error_stack << "\n";
+        rc = 6;
     }
-    auto er = positron::wire::decode_eval_response(*resp);
-    if (er.ok && er.result) {
-        std::cout << er.result->json << "\n";
-        return 0;
-    }
-    if (er.error) {
-        std::cerr << "error: " << er.error->message << "\n";
-        if (!er.error->stack.empty()) std::cerr << er.error->stack << "\n";
-    }
-    return 6;
+    s.detach();
+    (void)ms;
+    return rc;
 }
 
-int do_attach_repl(AttachContext& ctx) {
-    positron::pipe::Client c;
-    if (int rc = do_attach_setup(ctx, c); rc != 0) return rc;
-    return positron::repl::run(c, ctx.pid);
-}
-
-int do_run_script(AttachContext& ctx, const std::string& script_path, const EvalOpts& opts) {
+int do_run_script(const AttachArgs& a, const std::string& script_path,
+                  const positron::sdk::EvalOptions& opts) {
     std::ifstream f(script_path);
     if (!f) { std::cerr << "cannot open script: " << script_path << "\n"; return 7; }
     std::stringstream ss; ss << f.rdbuf();
-    return do_eval(ctx, ss.str(), opts);
+    return do_eval(a, ss.str(), opts);
+}
+
+int do_attach_repl(const AttachArgs& a) {
+    positron::sdk::Session s;
+    if (auto err = s.attach(a.pid, a.dll, a.transport)) {
+        std::cerr << "inject FAIL: " << err->message << "\n";
+        return 2;
+    }
+    std::cout << "[connected pid=" << a.pid
+              << " transport=" << mode_label(s.transport()) << "]\n";
+    print_unmap_status(s);
+    int rc = positron::repl::run(s, a.pid);
+    s.detach();
+    return rc;
 }
 
 } // anonymous
 
 int wmain(int argc, wchar_t** argv) {
-    // Convert wide argv to UTF-8 char*[] for CLI11. Some CLI11 versions reorder
-    // the std::vector<std::string> overload, so we use the (argc, argv) form.
     std::vector<std::string> argv_storage;
     argv_storage.reserve(argc);
     for (int i = 0; i < argc; ++i) argv_storage.push_back(narrow(argv[i]));
@@ -152,53 +137,70 @@ int wmain(int argc, wchar_t** argv) {
     auto* attach = app.add_subcommand("attach", "attach to a process and start an interactive REPL");
     uint32_t a_pid = 0;
     std::string a_dll;
+    bool a_native = false;
     attach->add_option("pid", a_pid, "target process ID")->required();
     attach->add_option("--dll", a_dll, "path to payload.dll (default: next to host.exe)");
+    attach->add_flag("--native", a_native,
+                     "use v1 (native) transport — required for .hook on native exports; default is v2 (JS)");
 
     auto* run_cmd = app.add_subcommand("run", "attach, execute a JS file, exit");
     uint32_t r_pid = 0;
     int r_rwin = 0;
     std::string r_dll, r_script;
     bool r_renderer = false;
+    bool r_native = false;
     run_cmd->add_option("pid", r_pid, "target process ID")->required();
     run_cmd->add_option("script", r_script, "path to .js file")->required();
     run_cmd->add_option("--dll", r_dll, "path to payload.dll");
     run_cmd->add_flag("--renderer,-r", r_renderer,
                       "hop into the BrowserWindow's renderer main world via webContents.executeJavaScript");
     run_cmd->add_option("--window", r_rwin, "BrowserWindow index when --renderer is set");
+    run_cmd->add_flag("--native", r_native, "use v1 (native) transport instead of v2");
 
     auto* eval = app.add_subcommand("eval", "attach, evaluate one expression, exit");
     uint32_t e_pid = 0;
     int e_rwin = 0;
     std::string e_dll, e_expr;
     bool e_renderer = false;
+    bool e_native = false;
     eval->add_option("pid", e_pid, "target process ID")->required();
     eval->add_option("expr", e_expr, "JS expression")->required();
     eval->add_option("--dll", e_dll, "path to payload.dll");
     eval->add_flag("--renderer,-r", e_renderer,
                    "hop into the BrowserWindow's renderer main world via webContents.executeJavaScript");
     eval->add_option("--window", e_rwin, "BrowserWindow index when --renderer is set");
+    eval->add_flag("--native", e_native, "use v1 (native) transport instead of v2");
 
     try { app.parse(argc, argv_utf8.data()); }
     catch (const CLI::ParseError& e) { return app.exit(e); }
 
     if (*list) return do_list();
 
+    auto pick_transport = [](bool native) {
+        return native ? positron::sdk::Transport::Native : positron::sdk::Transport::V2;
+    };
+
     if (*attach) {
-        AttachContext ctx{ a_pid, a_dll.empty() ? default_payload_path() : widen(a_dll) };
-        return do_attach_repl(ctx);
+        AttachArgs a{ a_pid, a_dll.empty() ? std::wstring{} : widen(a_dll), pick_transport(a_native) };
+        return do_attach_repl(a);
     }
     if (*run_cmd) {
-        AttachContext ctx{ r_pid, r_dll.empty() ? default_payload_path() : widen(r_dll) };
-        EvalOpts opts;
-        if (r_renderer) { opts.world = "renderer"; opts.window_idx = r_rwin; }
-        return do_run_script(ctx, r_script, opts);
+        AttachArgs a{ r_pid, r_dll.empty() ? std::wstring{} : widen(r_dll), pick_transport(r_native) };
+        positron::sdk::EvalOptions opts;
+        if (r_renderer) {
+            opts.world = positron::sdk::World::Renderer;
+            opts.window_index = r_rwin;
+        }
+        return do_run_script(a, r_script, opts);
     }
     if (*eval) {
-        AttachContext ctx{ e_pid, e_dll.empty() ? default_payload_path() : widen(e_dll) };
-        EvalOpts opts;
-        if (e_renderer) { opts.world = "renderer"; opts.window_idx = e_rwin; }
-        return do_eval(ctx, e_expr, opts);
+        AttachArgs a{ e_pid, e_dll.empty() ? std::wstring{} : widen(e_dll), pick_transport(e_native) };
+        positron::sdk::EvalOptions opts;
+        if (e_renderer) {
+            opts.world = positron::sdk::World::Renderer;
+            opts.window_index = e_rwin;
+        }
+        return do_eval(a, e_expr, opts);
     }
     return 0;
 }

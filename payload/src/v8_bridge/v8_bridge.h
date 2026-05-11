@@ -46,6 +46,11 @@ struct V8Bridge {
     bool eval_renderer_async(std::string code,
                              int window_index,
                              std::function<void(EvalOutcome)> done);
+
+    // Tell the renderer-poller thread to exit on its next tick. Called by
+    // teardown before unmapping the payload pages so the detached thread
+    // doesn't keep executing inside our about-to-be-freed .text.
+    void request_poller_shutdown();
 };
 
 } // namespace positron::v8b

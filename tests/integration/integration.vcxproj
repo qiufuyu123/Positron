@@ -29,22 +29,23 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(SolutionDir)host\src;$(SolutionDir)payload\src;$(SolutionDir)shared;$(SolutionDir)third_party;$(SolutionDir)third_party\Blackbone\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)sdk\include;$(SolutionDir)third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(SolutionDir)third_party\Blackbone\lib\x64\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>BlackBone.lib;dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(OutDir);$(SolutionDir)third_party\Blackbone\lib\x64\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>positron_sdk.lib;BlackBone.lib;dbghelp.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\host\src\injector\injector.cpp" />
-    <ClCompile Include="..\..\host\src\pipe_client\pipe_client.cpp" />
-    <ClCompile Include="..\..\host\src\process_enum\process_enum.cpp" />
-    <ClCompile Include="..\..\shared\wire\wire.cpp" />
     <ClCompile Include="fixture_runner.cpp" />
     <ClCompile Include="test_main_eval.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\sdk\positron_sdk.vcxproj">
+      <Project>{188C8BA8-0680-44EA-9AC1-EA4461819A0F}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

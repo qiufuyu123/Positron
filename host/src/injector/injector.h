@@ -5,7 +5,14 @@
 
 namespace positron::injector {
 
-struct Success { uint64_t module_base; };
+struct Success {
+    uint64_t module_base;
+    uint64_t veh_handle;       // target-process VEH handle (for RemoveVEH)
+    uint64_t veh_code_addr;    // target VA of VEH codecave
+    uint64_t veh_code_size;
+    uint64_t mod_table_addr;   // target VA of exception module table
+    uint64_t mod_table_size;
+};
 struct Error   { std::string message; };
 using Result = std::variant<Success, Error>;
 

@@ -51,9 +51,30 @@ struct HookHit {
 
 using HookHitHandler = std::function<void(const HookHit&)>;
 
+// Unsolicited frames the bootstrap pushes to host (log, mod.event, etc.)
+struct Message {
+    std::string kind;     // "log", "mod.event", ...
+    std::string json;     // raw JSON of the entire frame
+};
+using MessageHandler = std::function<void(const Message&)>;
+
 // =============================================================================
 // Session
 // =============================================================================
+
+// Transport mode after attach negotiates with the payload.
+//
+//   V2     (default) — payload evaluates a JS bootstrap that takes over the
+//                      transport. The SDK then talks to the JS server (in
+//                      the target's main V8 isolate) directly. Native hooks
+//                      are NOT available in this mode; install_hook() will
+//                      return 0 and emit a warning. Pro: clean async
+//                      semantics, no microtask-checkpoint complexity, host
+//                      can detach + reconnect without re-injecting.
+//   Native           — payload's C++ ipc_server stays in charge, same as
+//                      pre-v2 behavior. Required for native-symbol hooks
+//                      (.hook <export>) and for raw V8 ABI access.
+enum class Transport { V2, Native };
 
 class Session {
 public:
@@ -71,9 +92,11 @@ public:
     //   pid          target process ID
     //   payload_dll  path to positron payload DLL; pass empty to use
     //                "<dir-of-current-exe>/payload.dll".
+    //   transport    V2 (default) or Native. See Transport doc above.
     // Returns nullopt on success; AttachError on failure.
     std::optional<AttachError> attach(uint32_t pid,
-                                      const std::wstring& payload_dll = {});
+                                      const std::wstring& payload_dll = {},
+                                      Transport transport = Transport::V2);
 
     // Drop the connection and disable in-target hooks. The DLL stays mapped
     // in the target until the target exits (its trampolines may still be
@@ -81,6 +104,21 @@ public:
     void detach();
 
     bool is_connected() const;
+
+    // Which transport this session ended up on (only meaningful while
+    // is_connected() is true).
+    Transport transport() const;
+
+    // Address at which the payload DLL was manually mapped during attach,
+    // or 0 if attach hasn't run / failed. Useful for verifying phase-2
+    // self-unmap (caller can VirtualQueryEx this to check MEM_FREE).
+    uint64_t injected_module_base() const;
+
+    // Returns true if a VirtualQueryEx on the injected base reports the
+    // region is MEM_FREE (i.e. payload self-unmapped). Returns false if
+    // the page is still committed, or if the query fails. Intended for
+    // V2 mode after bootstrap completes.
+    bool verify_payload_unmapped();
 
     // Synchronously evaluate JS in the target. Blocks the caller for up to
     // opts.timeout_ms.
@@ -99,6 +137,10 @@ public:
 
     // Subscribe to hook.hit events. Replaces any prior handler.
     void on_hook_hit(HookHitHandler handler);
+
+    // Subscribe to unsolicited messages (log, mod.event, etc.) from the
+    // bootstrap JS server. Replaces any prior handler.
+    void on_message(MessageHandler handler);
 
 private:
     struct Impl;

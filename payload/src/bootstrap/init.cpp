@@ -5,14 +5,35 @@
 #include "ipc_server/ipc_server.h"
 #include "hook_engine/hook_engine.h"
 #include "v8_bridge/v8_bridge.h"
+#include "teardown/teardown.h"
 #include "wire/wire.h"
 #include <Windows.h>
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <thread>
 #include <cstdio>
 #include <vector>
 #include <string>
+
+namespace positron::bootstrap {
+std::atomic<bool> g_flusher_running{true};
+} // namespace positron::bootstrap
+
+// BlackBone residue addresses — filled when host sends teardown.info.
+// Teardown uses these to RemoveVEH + VirtualFree the scratch pages.
+namespace positron::teardown {
+struct BlackboneResidueInfo {
+    uint64_t veh_handle    = 0;
+    uint64_t veh_code_addr = 0;
+    uint64_t veh_code_size = 0;
+    uint64_t mod_table_addr= 0;
+    uint64_t mod_table_size= 0;
+};
+static BlackboneResidueInfo g_bb_info{};
+void set_blackbone_info(const BlackboneResidueInfo& info) { g_bb_info = info; }
+const BlackboneResidueInfo& get_blackbone_info() { return g_bb_info; }
+} // namespace positron::teardown
 
 namespace positron::bootstrap {
 
@@ -55,6 +76,104 @@ unsigned __stdcall init_thread_main(void*) {
             log::info("detach: disabling hooks + closing connection");
             hook::shutdown();
             ipc::Server::instance().stop();
+            return;
+        }
+        if (kind == "transport.select") {
+            log::info("transport.select mode=" + cmd.value("mode", std::string{}));
+            return;
+        }
+        if (kind == "teardown.info") {
+            teardown::BlackboneResidueInfo info;
+            info.veh_handle     = cmd.value("veh_handle",     uint64_t{0});
+            info.veh_code_addr  = cmd.value("veh_code_addr",  uint64_t{0});
+            info.veh_code_size  = cmd.value("veh_code_size",  uint64_t{0});
+            info.mod_table_addr = cmd.value("mod_table_addr", uint64_t{0});
+            info.mod_table_size = cmd.value("mod_table_size", uint64_t{0});
+            teardown::set_blackbone_info(info);
+            log::info("teardown.info received: veh_handle=" +
+                      std::to_string(info.veh_handle) + " veh_code=" +
+                      std::to_string(info.veh_code_addr) + " mod_table=" +
+                      std::to_string(info.mod_table_addr));
+            return;
+        }
+        if (kind == "bootstrap.start") {
+            std::string code = cmd.value("code", std::string{});
+            if (code.empty()) {
+                ipc::Server::instance().push(wire::Json{
+                    {"kind", "v2.error"}, {"message", "empty bootstrap code"}});
+                return;
+            }
+            // Run the bootstrap in the V8 main thread. The IIFE returns
+            // immediately; server.listen() finishes asynchronously, so we
+            // poll globalThis.__positron_v2 for readiness.
+            v8b::V8Bridge::instance().eval_async(code, [](v8b::V8Bridge::EvalOutcome out) {
+                if (!out.ok) {
+                    ipc::Server::instance().push(wire::Json{
+                        {"kind", "v2.error"},
+                        {"message", "bootstrap eval failed: " + out.error_message},
+                        {"stack",   out.error_stack}});
+                    return;
+                }
+                // Spin a poll thread; it'll send v2.ready or v2.error to host.
+                std::thread([]{
+                    using clock = std::chrono::steady_clock;
+                    auto deadline = clock::now() + std::chrono::seconds(5);
+                    const std::string check_js =
+                        "(function(){var s=globalThis.__positron_v2;return s||null;})()";
+                    while (clock::now() < deadline) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                        std::promise<v8b::V8Bridge::EvalOutcome> prom;
+                        auto fut = prom.get_future();
+                        bool sched = v8b::V8Bridge::instance().eval_async(
+                            check_js, [&prom](auto o){ try { prom.set_value(std::move(o)); } catch(...){} });
+                        if (!sched) continue;
+                        if (fut.wait_for(std::chrono::milliseconds(500)) != std::future_status::ready) continue;
+                        auto o = fut.get();
+                        if (!o.ok) continue;
+                        // out.json_value is JSON.stringify of the wrapper's value field.
+                        // null  -> still pending; otherwise it's an object.
+                        if (o.json_value.empty() || o.json_value == "null") continue;
+                        try {
+                            auto j = nlohmann::json::parse(o.json_value);
+                            auto status = j.value("status", std::string{});
+                            if (status == "ready") {
+                                int port = j.value("port", 0);
+                                ipc::Server::instance().push(wire::Json{
+                                    {"kind", "v2.ready"}, {"port", port}});
+                                return;
+                            }
+                            if (status == "error") {
+                                ipc::Server::instance().push(wire::Json{
+                                    {"kind", "v2.error"},
+                                    {"message", j.value("message", std::string{"unknown"})},
+                                    {"stack",   j.value("stack",   std::string{})}});
+                                return;
+                            }
+                        } catch (...) { /* keep polling */ }
+                    }
+                    ipc::Server::instance().push(wire::Json{
+                        {"kind", "v2.error"},
+                        {"message", "bootstrap timeout: __positron_v2 never reached ready"}});
+                }).detach();
+            });
+            return;
+        }
+        if (kind == "v2.commit") {
+            // Host has switched to the JS server. We're now redundant -- the
+            // JS server in V8 owns the live REPL. Tear ourselves down:
+            //   1. Set shutdown flags so detached threads (hit-flusher,
+            //      renderer-poller) bail out on their next tick.
+            //   2. request_stop on the ipc server so accept_thread + writer
+            //      exit naturally as their socket closes (we're inside
+            //      accept_thread right now -- can't join self).
+            //   3. Schedule the self-unmap trampoline on a kernel32-resident
+            //      scratch page; it sleeps 500 ms (lets all our threads
+            //      fully exit) then VirtualFree's our image base.
+            log::info("v2.commit: tearing down payload (phase 2 self-unmap)");
+            g_flusher_running.store(false, std::memory_order_release);
+            v8b::V8Bridge::instance().request_poller_shutdown();
+            ipc::Server::instance().request_stop();
+            teardown::schedule_unmap(/*delay_ms=*/500);
             return;
         }
         if (kind == "hook.install") {
@@ -113,9 +232,8 @@ unsigned __stdcall init_thread_main(void*) {
 
     // Hit-flusher: periodically drain the hook ring buffer and emit hook.hit
     // events. Detaches because the payload outlives this thread.
-    static std::atomic<bool> flusher_running{true};
     std::thread([]{
-        while (flusher_running.load()) {
+        while (g_flusher_running.load()) {
             hook::UserHit hit{};
             uint32_t dropped = 0;
             while (hook::drain_user_hit(&hit, &dropped)) {

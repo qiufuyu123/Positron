@@ -85,7 +85,15 @@ Result inject(const Options& opt) {
         return Error{std::string{"blackbone::MapImage failed (NTSTATUS "} + buf + ")"};
     }
 
-    return Success{ static_cast<uint64_t>(map_result.result()->baseAddress) };
+    auto& em = proc.mmap().exceptMgr();
+    Success s{};
+    s.module_base   = static_cast<uint64_t>(map_result.result()->baseAddress);
+    s.veh_handle    = em.vehHandle();
+    s.veh_code_addr = static_cast<uint64_t>(em.vehCodePtr());
+    s.veh_code_size = static_cast<uint64_t>(em.vehCodeSize());
+    s.mod_table_addr= static_cast<uint64_t>(em.modTablePtr());
+    s.mod_table_size= static_cast<uint64_t>(em.modTableSize());
+    return s;
 }
 
 } // namespace positron::injector

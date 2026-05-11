@@ -295,13 +295,25 @@ bool run_script_get_string(void* iso, void* ctx, const std::string& js,
     g_r.Script_Run(script, &result, ctx);
     if (!result) { out_err = "run failed"; return false; }
 
-    // Buffer sized for typical eval results; renderer hop wrappers read just
-    // a single small JSON object from the launcher script (which doesn't
-    // return anything), so 4 KB is plenty here.
+    // Fast path: a stack buffer that handles the common case (small evals,
+    // launcher scripts that just return ""). If it looks like the encoded
+    // string filled the buffer (a UTF-8 char is up to 4 bytes, so leave a
+    // 4-byte slack), we may have been truncated — retry on the heap with a
+    // buffer matching the wire frame ceiling (16 MB). This matters for e.g.
+    // page-dump payloads coming back through the renderer-poll path, whose
+    // result-JSON is the concatenation of every parked result.
     char small[8192];
     size_t processed = 0;
-    size_t n = g_r.String_WriteUtf8V2(result, iso, small, sizeof(small) - 1, 0, &processed);
-    out_string.assign(small, small + n);
+    size_t n = g_r.String_WriteUtf8V2(result, iso, small, sizeof(small), 0, &processed);
+    if (n + 4 < sizeof(small)) {
+        out_string.assign(small, small + n);
+        return true;
+    }
+    constexpr size_t kBigCap = 16u * 1024u * 1024u;
+    std::vector<char> heap(kBigCap);
+    processed = 0;
+    n = g_r.String_WriteUtf8V2(result, iso, heap.data(), heap.size(), 0, &processed);
+    out_string.assign(heap.data(), heap.data() + n);
     return true;
 }
 
@@ -360,6 +372,9 @@ static std::mutex                  g_renderer_mu;
 static std::vector<PendingRenderer> g_renderer_pending;
 static std::atomic<uint64_t>       g_renderer_id_counter{1};
 static std::atomic<bool>           g_poller_started{false};
+// Set by teardown::request_shutdown() so the detached poller thread can
+// exit cleanly before the payload .text gets unmapped under it.
+static std::atomic<bool>           g_poller_shutdown{false};
 
 void poll_renderer_pending_on_v8_thread() {
     std::vector<PendingRenderer> snapshot;
@@ -458,8 +473,9 @@ void ensure_poller_running() {
     bool was = g_poller_started.exchange(true);
     if (was) return;
     std::thread([]{
-        for (;;) {
+        while (!g_poller_shutdown.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (g_poller_shutdown.load(std::memory_order_acquire)) break;
             {
                 std::lock_guard<std::mutex> lk(g_renderer_mu);
                 if (g_renderer_pending.empty()) continue;
@@ -473,6 +489,10 @@ void ensure_poller_running() {
 } // anonymous
 
 namespace positron::v8b {
+
+void V8Bridge::request_poller_shutdown() {
+    g_poller_shutdown.store(true, std::memory_order_release);
+}
 
 bool V8Bridge::eval_async(std::string code, std::function<void(EvalOutcome)> done) {
     if (!g_ready.load(std::memory_order_acquire)) return false;

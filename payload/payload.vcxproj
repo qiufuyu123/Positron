@@ -160,6 +160,8 @@
     <ClCompile Include="src\ipc_server\ipc_server.cpp" />
     <ClCompile Include="src\hook_engine\hook_engine.cpp" />
     <ClCompile Include="src\v8_bridge\v8_bridge.cpp" />
+    <ClCompile Include="src\teardown\teardown.cpp" />
+    <ClInclude Include="src\teardown\teardown.h" />
     <ClCompile Include="..\shared\wire\wire.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>

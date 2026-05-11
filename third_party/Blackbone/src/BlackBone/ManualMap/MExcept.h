@@ -61,6 +61,13 @@ public:
     /// </summary>
     BLACKBONE_API void reset() { _pModTable.Free(); }
 
+    // positron: expose for self-teardown from within the target process.
+    BLACKBONE_API uint64_t vehHandle()   const { return _hVEH; }
+    BLACKBONE_API ptr_t    vehCodePtr()  const { return _pVEHCode.ptr(); }
+    BLACKBONE_API size_t   vehCodeSize() const { return _pVEHCode.size(); }
+    BLACKBONE_API ptr_t    modTablePtr() const { return _pModTable.ptr(); }
+    BLACKBONE_API size_t   modTableSize()const { return _pModTable.size(); }
+
 private:
     MemBlock _pVEHCode;    // VEH function codecave
     MemBlock _pModTable;   // x64 module address range table

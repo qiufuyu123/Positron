@@ -222,6 +222,10 @@ public:
     /// Reset local data
     /// </summary>
     BLACKBONE_API inline void reset() { _images.clear(); _pAContext.Reset(); _usedBlocks.clear(); }
+
+    // positron: access exception manager for self-teardown info.
+    BLACKBONE_API const MExcept& exceptMgr() const { return _expMgr; }
+
 private:
     /// <summary>
     /// Manually map PE image into underlying target process

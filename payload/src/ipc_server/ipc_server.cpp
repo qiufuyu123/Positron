@@ -172,11 +172,15 @@ struct Impl {
     }
 
     void stop() {
+        request_stop();
+        if (accept_thread.joinable()) accept_thread.join();
+        if (writer_thread.joinable()) writer_thread.join();
+    }
+
+    void request_stop() {
         running = false;
         outbox_cv.notify_all();
         if (conn != INVALID_SOCKET) ::shutdown(conn, SD_BOTH);
-        if (accept_thread.joinable()) accept_thread.join();
-        if (writer_thread.joinable()) writer_thread.join();
     }
 };
 
@@ -191,6 +195,7 @@ void Server::set_greeter(Greeter g) { g_impl.greeter = std::move(g); }
 void Server::start(uint32_t pid, Handler h) { g_impl.start(pid, std::move(h)); }
 void Server::push(const Json& j) { g_impl.push(j); }
 void Server::stop() { g_impl.stop(); }
+void Server::request_stop() { g_impl.request_stop(); }
 bool Server::is_connected() const { return g_impl.connected.load(); }
 
 } // namespace positron::ipc
