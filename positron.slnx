@@ -3,6 +3,7 @@
     <Platform Name="x64" />
     <Platform Name="Win32" />
   </Configurations>
+  <Project Path="third_party/Blackbone/src/BlackBone/BlackBone.vcxproj" Id="a2c53563-46f5-4d87-903f-3f1f2fdb2deb" />
   <Project Path="host/host.vcxproj" Id="f2087b6f-1b68-443d-8ef1-0dd82dbf7b10" />
   <Project Path="payload/payload.vcxproj" Id="cba9ce88-817f-4631-a453-8763934721ce" />
   <Project Path="sdk/positron_sdk.vcxproj" Id="188c8ba8-0680-44ea-9ac1-ea4461819a0f" />
