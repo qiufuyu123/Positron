@@ -178,4 +178,4 @@ s.detach();
 
 ## License
 
-Research and educational use.
+[MIT](LICENSE)
