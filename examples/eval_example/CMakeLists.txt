@@ -1,0 +1,2 @@
+add_executable(eval_example eval_example.cpp)
+target_link_libraries(eval_example PRIVATE positron_sdk positron::project_options)
