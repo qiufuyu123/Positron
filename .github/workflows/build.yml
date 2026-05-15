@@ -14,8 +14,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        platform: [x64, Win32]
-        config: [Release]
+        arch: [x64, Win32]
 
     steps:
       - uses: actions/checkout@v4
@@ -32,29 +31,37 @@ jobs:
 
       - run: npm ci
 
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch == 'Win32' && 'x86' || 'x64' }}
 
-      - name: Build ${{ matrix.platform }}
-        run: msbuild positron.slnx /p:Configuration=${{ matrix.config }} /p:Platform=${{ matrix.platform }} /m
+      - name: CMake configure
+        run: >
+          cmake -B build-ci -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPOSITRON_BUILD_TESTS=OFF
+          -DPOSITRON_BUILD_EXAMPLES=OFF
+
+      - name: Build
+        run: cmake --build build-ci --config Release
 
       - name: Collect artifacts
         shell: pwsh
         run: |
-          $outDir = if ("${{ matrix.platform }}" -eq "x64") { "x64" } else { "Win32" }
-          $dest = "positron-${{ matrix.platform }}"
+          $src = "build-ci"
+          $dest = "positron-${{ matrix.arch }}"
           New-Item -ItemType Directory -Force $dest
-          Copy-Item "$outDir\${{ matrix.config }}\host.exe" $dest\
-          Copy-Item "$outDir\${{ matrix.config }}\payload.dll" $dest\
-          Copy-Item "$outDir\${{ matrix.config }}\positron_sdk.lib" $dest\
+          Get-ChildItem $src -Recurse -Include host.exe,payload.dll,positron_sdk.lib | ForEach-Object {
+            Copy-Item $_.FullName $dest\
+          }
           Copy-Item "sdk\include" "$dest\include" -Recurse
           Copy-Item "sdk\bootstrap.js" $dest\
-          Copy-Item "sdk\types" "$dest\types" -Recurse -ErrorAction SilentlyContinue
+          if (Test-Path "sdk\types") { Copy-Item "sdk\types" "$dest\types" -Recurse }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: positron-${{ matrix.platform }}
-          path: positron-${{ matrix.platform }}/
+          name: positron-${{ matrix.arch }}
+          path: positron-${{ matrix.arch }}/
 
   release:
     needs: build
