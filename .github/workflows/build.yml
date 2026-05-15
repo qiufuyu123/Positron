@@ -1,0 +1,85 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        platform: [x64, Win32]
+        config: [Release]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Apply patches
+        shell: pwsh
+        run: powershell -File patches/apply.ps1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build ${{ matrix.platform }}
+        run: msbuild positron.slnx /p:Configuration=${{ matrix.config }} /p:Platform=${{ matrix.platform }} /m
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $outDir = if ("${{ matrix.platform }}" -eq "x64") { "x64" } else { "Win32" }
+          $dest = "positron-${{ matrix.platform }}"
+          New-Item -ItemType Directory -Force $dest
+          Copy-Item "$outDir\${{ matrix.config }}\host.exe" $dest\
+          Copy-Item "$outDir\${{ matrix.config }}\payload.dll" $dest\
+          Copy-Item "$outDir\${{ matrix.config }}\positron_sdk.lib" $dest\
+          Copy-Item "sdk\include" "$dest\include" -Recurse
+          Copy-Item "sdk\bootstrap.js" $dest\
+          Copy-Item "sdk\types" "$dest\types" -Recurse -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: positron-${{ matrix.platform }}
+          path: positron-${{ matrix.platform }}/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: positron-x64
+          path: positron-x64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: positron-Win32
+          path: positron-Win32
+
+      - name: Package zips
+        run: |
+          cd positron-x64 && zip -r ../positron-x64.zip . && cd ..
+          cd positron-Win32 && zip -r ../positron-Win32.zip . && cd ..
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            positron-x64.zip
+            positron-Win32.zip
+          generate_release_notes: true
