@@ -55,7 +55,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;REPLXX_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(SolutionDir)sdk\include;$(SolutionDir)third_party\replxx\include;$(SolutionDir)third_party\cli11;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(SolutionDir)sdk\include;$(SolutionDir)third_party\replxx\include;$(SolutionDir)third_party\cli11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -73,7 +73,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;REPLXX_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(SolutionDir)sdk\include;$(SolutionDir)third_party\replxx\include;$(SolutionDir)third_party\cli11;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(SolutionDir)sdk\include;$(SolutionDir)third_party\replxx\include;$(SolutionDir)third_party\cli11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

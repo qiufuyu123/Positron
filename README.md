@@ -153,7 +153,7 @@ positron/
   shared/wire/    Length-prefixed JSON framing
   examples/       SDK consumer, JS modules (demo, hello)
   tests/          Integration + unit tests
-  third_party/    BlackBone, nlohmann/json, replxx, CLI11, MinHook
+  third_party/    Dependencies (git submodules, see licenses below)
 ```
 
 ### Self-Unmap Sequence
@@ -174,6 +174,28 @@ positron::sdk::Session s;
 s.attach(pid);               // v2 by default
 auto r = s.eval("1+1");     // r.json_value == "2"
 s.detach();
+```
+
+## Third-Party Dependencies
+
+All dependencies are included as git submodules under `third_party/`.
+
+| Library | License | Description |
+|---|---|---|
+| [BlackBone](https://github.com/DarthTon/Blackbone) | MIT | Manual DLL mapping into hardened processes |
+| [MinHook](https://github.com/TsudaKageyu/minhook) | BSD-2-Clause | Inline hook engine for x64/x86 |
+| [nlohmann/json](https://github.com/nlohmann/json) | MIT | JSON for Modern C++ |
+| [CLI11](https://github.com/CLIUtils/CLI11) | BSD-3-Clause | Command line parser |
+| [replxx](https://github.com/AmokHuginnsson/replxx) | BSD-3-Clause | Interactive REPL line editing |
+| [doctest](https://github.com/doctest/doctest) | MIT | C++ testing framework |
+
+After cloning, initialize submodules and apply patches:
+```bash
+git submodule update --init --recursive
+# Apply local patches (BlackBone toolset + API getters)
+cd third_party/Blackbone && git apply ../../patches/blackbone.patch && cd ../..
+# Or on Windows PowerShell:
+powershell -File patches/apply.ps1
 ```
 
 ## License

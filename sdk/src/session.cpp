@@ -12,9 +12,11 @@
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <mutex>
 #include <queue>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 
@@ -453,6 +455,79 @@ void Session::on_message(MessageHandler handler) {
     if (!p) return;
     std::lock_guard<std::mutex> lk(p->msg_mu);
     p->msg_handler = std::move(handler);
+}
+
+// ---- Module system --------------------------------------------------------
+
+namespace {
+
+std::string escape_for_template_literal(const std::string& code) {
+    std::string out;
+    out.reserve(code.size() + 256);
+    for (char c : code) {
+        if (c == '\\')     out += "\\\\";
+        else if (c == '`') out += "\\`";
+        else if (c == '$') out += "\\$";
+        else               out += c;
+    }
+    return out;
+}
+
+std::string read_file_utf8(const std::wstring& path) {
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs) return {};
+    std::ostringstream ss;
+    ss << ifs.rdbuf();
+    return ss.str();
+}
+
+} // anonymous
+
+EvalResult Session::load_module(const std::string& js_code, uint32_t timeout_ms) {
+    std::string js = "(function(){for(var k in globalThis){if(k[0]==='_'&&globalThis[k]&&globalThis[k].i)return globalThis[k].i}return null})().loadModule(`"
+                   + escape_for_template_literal(js_code) + "`)";
+    return eval(js, {World::Auto, 0, timeout_ms});
+}
+
+EvalResult Session::load_module_file(const std::wstring& path, uint32_t timeout_ms) {
+    // Convert wstring path to UTF-8 for JS, escape backslashes for string literal
+    std::string utf8;
+    {
+        int len = ::WideCharToMultiByte(CP_UTF8, 0, path.c_str(), (int)path.size(), nullptr, 0, nullptr, nullptr);
+        if (len > 0) {
+            utf8.resize(len);
+            ::WideCharToMultiByte(CP_UTF8, 0, path.c_str(), (int)path.size(), utf8.data(), len, nullptr, nullptr);
+        }
+    }
+    if (utf8.empty()) {
+        EvalResult r;
+        r.ok = false;
+        r.error_message = "invalid file path";
+        return r;
+    }
+    // Escape backslashes and quotes for JS string literal
+    std::string escaped;
+    escaped.reserve(utf8.size() + 32);
+    for (char c : utf8) {
+        if (c == '\\') escaped += "\\\\";
+        else if (c == '\'') escaped += "\\'";
+        else escaped += c;
+    }
+    std::string js = "(function(){for(var k in globalThis){if(k[0]==='_'&&globalThis[k]&&globalThis[k].i)return globalThis[k].i}return null})().loadModuleFromFile('" + escaped + "')";
+    return eval(js, {World::Auto, 0, timeout_ms});
+}
+
+EvalResult Session::unload_module(const std::string& name, uint32_t timeout_ms) {
+    std::string js = "(function(){for(var k in globalThis){if(k[0]==='_'&&globalThis[k]&&globalThis[k].i)return globalThis[k].i}return null})().unloadModule('" + name + "')";
+    return eval(js, {World::Auto, 0, timeout_ms});
+}
+
+EvalResult Session::list_modules(uint32_t timeout_ms) {
+    return eval("(function(){for(var k in globalThis){if(k[0]==='_'&&globalThis[k]&&globalThis[k].i)return globalThis[k].i}return null})().listModules()", {World::Auto, 0, timeout_ms});
+}
+
+EvalResult Session::shutdown_server(uint32_t timeout_ms) {
+    return eval("(function(){for(var k in globalThis){if(k[0]==='_'&&globalThis[k]&&globalThis[k].i)return globalThis[k].i}return null})().shutdown()", {World::Auto, 0, timeout_ms});
 }
 
 } // namespace positron::sdk

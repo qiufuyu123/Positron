@@ -32,6 +32,7 @@ void print_help(replxx::Replxx& rx) {
         "  .mod load <file>      load a JS module into the target process\n"
         "  .mod unload <name>    unload a previously loaded module by name\n"
         "  .mod list             list currently loaded modules\n"
+        "  .shutdown             close TCP server (modules keep running)\n"
         "  .detach / .quit       disable hooks, close, exit REPL\n"
         "  .help                 this message\n");
 }
@@ -154,7 +155,15 @@ int run(positron::sdk::Session& s, uint32_t target_pid) {
 
         if (line == ".help") { print_help(rx); continue; }
         if (line == ".quit" || line == ".detach") {
-            // SDK detach fires the wire-level detach + cleans up.
+            break;
+        }
+        if (line == ".shutdown") {
+            auto r = s.shutdown_server();
+            if (r.ok) {
+                rx.print("[shutdown] TCP server closed. modules still running.\n");
+            } else {
+                rx.print(("[shutdown error] " + r.error_message + "\n").c_str());
+            }
             break;
         }
         if (line.rfind(".hook ", 0) == 0) {
@@ -243,7 +252,7 @@ int run(positron::sdk::Session& s, uint32_t target_pid) {
                     else escaped += c;
                 }
                 std::string js =
-                    "globalThis.__positron_v2_internal.loadModule(`" + escaped + "`)";
+                    "(function(){for(var k in globalThis){if(k[0]==='_'&&globalThis[k]&&globalThis[k].i)return globalThis[k].i}return null})().loadModule(`" + escaped + "`)";
 
                 positron::sdk::EvalOptions opts;
                 opts.timeout_ms = 10000;
@@ -259,7 +268,7 @@ int run(positron::sdk::Session& s, uint32_t target_pid) {
                 std::string modname = trim(sub.substr(7));
                 if (modname.empty()) { rx.print("[.mod unload] usage: .mod unload <name>\n"); continue; }
                 std::string js =
-                    "globalThis.__positron_v2_internal.unloadModule('" + modname + "')";
+                    "(function(){for(var k in globalThis){if(k[0]==='_'&&globalThis[k]&&globalThis[k].i)return globalThis[k].i}return null})().unloadModule('" + modname + "')";
                 positron::sdk::EvalOptions opts;
                 opts.timeout_ms = 5000;
                 auto r = s.eval(js, opts);
@@ -272,9 +281,8 @@ int run(positron::sdk::Session& s, uint32_t target_pid) {
             }
             if (sub == "list" || sub.empty()) {
                 std::string js =
-                    "(function(){var _s=globalThis.__positron_v2_internal;"
-                    "if(!_s||!_s.modules)return[];"
-                    "return Object.keys(_s.modules)})()";
+                    "(function(){for(var k in globalThis){if(k[0]==='_'&&globalThis[k]&&globalThis[k].i){var _s=globalThis[k].i;"
+                    "return _s.modules?Object.keys(_s.modules):[]}}return[]})()";
                 positron::sdk::EvalOptions opts;
                 opts.timeout_ms = 3000;
                 auto r = s.eval(js, opts);

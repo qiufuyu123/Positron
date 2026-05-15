@@ -1,0 +1,42 @@
+<div class="hdr" id="__po_drag"></div>
+<!-- default: chat view -->
+<div id="__po_view_default" style="display:flex;flex-direction:column;flex:1;min-height:0">
+  <div id="__po_chat_area"></div>
+  <div id="__po_chat_thumbs"></div>
+  <!-- custom input mode (hidden by default — Custom Input is OFF) -->
+  <div id="__po_input_custom" style="display:none">
+    <div id="__po_chat_input_bar">
+      <div id="__po_chat_snap_btn2" class="po-snap-icon" title="Screenshot">&#128247;</div>
+      <input id="__po_chat_input" type="text" placeholder="ask something..." autocomplete="off" spellcheck="false">
+      <div id="__po_chat_send_btn">&gt;</div>
+    </div>
+  </div>
+  <!-- quick mode (shown by default) -->
+  <div id="__po_input_quick" style="display:flex">
+    <div id="__po_quick_bar">
+      <div id="__po_chat_snap_btn" class="po-snap-icon" title="Screenshot">&#128247;</div>
+      <div class="po-quick-btn" id="__po_btn_brief" title="Tell me the answer">Brief</div>
+      <div class="po-quick-btn" id="__po_btn_detail" title="Tell me the full solution">Detail</div>
+    </div>
+  </div>
+  <div class="po-hint">CC toggle &middot; XX menu</div>
+</div>
+<!-- admin menu -->
+<div id="__po_view_menu" style="display:none">
+  <div class="menu-title">Admin</div>
+  <label class="menu-check"><input type="checkbox" id="__po_chk_autoclear" checked> Auto-clear context</label>
+  <label class="menu-check"><input type="checkbox" id="__po_chk_custominput"> Custom input</label>
+  <div class="menu-btn" id="__po_btn_model">Model: Gemini 3.1 Pro</div>
+  <div class="menu-sep"></div>
+  <div class="menu-btn" id="__po_btn_clear_license">Clear license.dat</div>
+  <div class="menu-btn" id="__po_btn_reverify">Re-verify license</div>
+  <div class="menu-sep"></div>
+  <div class="po-slider-row">
+    <span class="k">Opacity</span>
+    <input type="range" id="__po_opacity" min="0" max="100" value="60">
+    <span class="v" id="__po_opacity_val">60%</span>
+  </div>
+  <div class="menu-status" id="__po_menu_status"></div>
+  <div class="po-hint">XX back</div>
+</div>
+<div id="__po_resize"></div>

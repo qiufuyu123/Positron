@@ -29,7 +29,7 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(SolutionDir)shared;$(SolutionDir)third_party;$(SolutionDir)payload\src;$(SolutionDir)host\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)shared;$(SolutionDir)third_party\nlohmann\single_include;$(SolutionDir)third_party\doctest;$(SolutionDir)third_party;$(SolutionDir)payload\src;$(SolutionDir)host\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation></Link>
   </ItemDefinitionGroup>

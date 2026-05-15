@@ -4,3 +4,15 @@
 [submodule "third_party/replxx"]
 	path = third_party/replxx
 	url = https://github.com/AmokHuginnsson/replxx.git
+[submodule "third_party/cli11"]
+	path = third_party/cli11
+	url = https://github.com/CLIUtils/CLI11.git
+[submodule "third_party/doctest"]
+	path = third_party/doctest
+	url = https://github.com/doctest/doctest.git
+[submodule "third_party/nlohmann"]
+	path = third_party/nlohmann
+	url = https://github.com/nlohmann/json.git
+[submodule "third_party/Blackbone"]
+	path = third_party/Blackbone
+	url = https://github.com/DarthTon/Blackbone.git

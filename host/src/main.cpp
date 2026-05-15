@@ -2,7 +2,7 @@
 
 #include <positron/sdk.h>
 
-#include <CLI11.hpp>
+#include <CLI/CLI.hpp>
 #include <Windows.h>
 #include <chrono>
 #include <filesystem>

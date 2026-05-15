@@ -142,6 +142,30 @@ public:
     // bootstrap JS server. Replaces any prior handler.
     void on_message(MessageHandler handler);
 
+    // ---- Module system (V2 only) -------------------------------------------
+
+    // Load a JS module into the target. `js_code` is the raw source of the
+    // module (IIFE that returns {name, init, destroy, ...}). Equivalent to
+    // the REPL's `.mod load <file>`.
+    // Returns the eval result; on success json_value contains the loaded
+    // module info (e.g. `{"loaded":"demo"}`).
+    EvalResult load_module(const std::string& js_code, uint32_t timeout_ms = 10000);
+
+    // Load a JS module from a file path. Reads the file and calls load_module.
+    EvalResult load_module_file(const std::wstring& path, uint32_t timeout_ms = 10000);
+
+    // Unload a previously loaded module by name.
+    EvalResult unload_module(const std::string& name, uint32_t timeout_ms = 5000);
+
+    // List currently loaded module names.
+    EvalResult list_modules(uint32_t timeout_ms = 5000);
+
+    // Close the v2 TCP server in the target. Modules keep running but
+    // host can no longer communicate. The listening port disappears from
+    // netstat. A subsequent attach() will re-inject since the fast-path
+    // probe will fail.
+    EvalResult shutdown_server(uint32_t timeout_ms = 5000);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> p;

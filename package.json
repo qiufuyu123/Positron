@@ -17,5 +17,9 @@
   "type": "commonjs",
   "devDependencies": {
     "terser": "^5.47.1"
+  },
+  "dependencies": {
+    "katex": "^0.16.45",
+    "marked": "^18.0.3"
   }
 }

@@ -6,7 +6,15 @@
 
 (function(){
 try {
-  if (globalThis.__positron_v2 && globalThis.__positron_v2.status === 'ready') return;
+  // Use a randomized global key to avoid fingerprinting
+  var _gk = '_' + Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 6);
+  // Check if already bootstrapped (any key matching pattern)
+  for (var _ek in globalThis) {
+    if (_ek.charAt(0) === '_' && globalThis[_ek] && globalThis[_ek].__positron_status === 'ready') {
+      _gk = _ek; // reuse existing key
+      return;
+    }
+  }
 
   var req = (function(){
     try { if (typeof require === 'function') return require; } catch (e) {}
@@ -86,8 +94,23 @@ try {
   var modules = {};      // name -> { exports, api }
   var modFramer = null;  // current framer (set per-connection)
 
+  // Resolve commonly-needed Node/Electron modules once, cache for all modules.
+  var _fs = null, _path = null, _os = null, _cp = null, _http = null, _https = null, _url = null, _crypto = null;
+  try { _fs     = req('fs');     } catch(e){}
+  try { _path   = req('path');   } catch(e){}
+  try { _os     = req('os');     } catch(e){}
+  try { _cp     = req('child_process'); } catch(e){}
+  try { _http   = req('http');   } catch(e){}
+  try { _https  = req('https');  } catch(e){}
+  try { _url    = req('url');    } catch(e){}
+  try { _crypto = req('crypto'); } catch(e){}
+
   function makeModuleApi(name) {
+    var electron = getElectron();
+    var wins = (electron && electron.BrowserWindow) ? electron.BrowserWindow.getAllWindows() : [];
+
     return {
+      // --- eval ---
       eval: function(code) {
         return new Promise(function(resolve, reject) {
           try {
@@ -100,22 +123,69 @@ try {
       evalRenderer: function(code, idx) {
         idx = idx || 0;
         return new Promise(function(resolve, reject) {
-          var electron = getElectron();
-          if (!electron || !electron.BrowserWindow) { reject(new Error('no BrowserWindow')); return; }
-          var wins = electron.BrowserWindow.getAllWindows();
-          if (!wins[idx]) { reject(new Error('no window at index ' + idx)); return; }
-          wins[idx].webContents.executeJavaScript(code, true).then(resolve, reject);
+          var el = getElectron();
+          if (!el || !el.BrowserWindow) { reject(new Error('no BrowserWindow')); return; }
+          var w = el.BrowserWindow.getAllWindows();
+          if (!w[idx]) { reject(new Error('no window at index ' + idx)); return; }
+          w[idx].webContents.executeJavaScript(code, true).then(resolve, reject);
         });
       },
+
+      // --- communication ---
       send: function(msg) {
         if (modFramer) modFramer.send({ kind: 'mod.event', module: name, data: msg });
       },
-      getElectron: getElectron,
-      require: req,
       log: function(str) {
         if (modFramer) modFramer.send({ kind: 'log', level: 'info',
                                         message: '[mod:' + name + '] ' + str });
-      }
+      },
+
+      // --- Node.js core modules ---
+      require: req,
+      fs: (function(){
+        var o = _fs || {};
+        o.read  = function(p, enc) { return _fs ? _fs.readFileSync(p, enc || 'utf8') : null; };
+        o.write = function(p, data) { if (_fs) _fs.writeFileSync(p, data); };
+        o.exists = function(p) { return _fs ? _fs.existsSync(p) : false; };
+        o.mkdir = function(p) { if (_fs) _fs.mkdirSync(p, {recursive:true}); };
+        o.readdir = function(p) { return _fs ? _fs.readdirSync(p) : []; };
+        o.remove = function(p) { if (_fs) _fs.rmSync(p, {recursive:true, force:true}); };
+        o.stat = function(p) { return _fs ? _fs.statSync(p) : null; };
+        return o;
+      })(),
+      path: _path,
+      os: _os,
+      childProcess: _cp,
+      http: _http,
+      https: _https,
+      url: _url,
+      crypto: _crypto,
+
+      // --- Node.js globals ---
+      process: (typeof process !== 'undefined') ? process : null,
+      Buffer: (typeof Buffer !== 'undefined') ? Buffer : null,
+
+      // --- Electron ---
+      electron: electron,
+      getElectron: getElectron,
+      getWindows: function() {
+        var el = getElectron();
+        return (el && el.BrowserWindow) ? el.BrowserWindow.getAllWindows() : [];
+      },
+      getWebContents: function(idx) {
+        var w = this.getWindows();
+        return w[idx || 0] ? w[idx || 0].webContents : null;
+      },
+
+      // --- convenience ---
+      exec: function(cmd) {
+        if (!_cp) return null;
+        return _cp.execSync(cmd, { encoding: 'utf8' });
+      },
+      setTimeout: setTimeout,
+      setInterval: setInterval,
+      clearTimeout: clearTimeout,
+      clearInterval: clearInterval
     };
   }
 
@@ -239,7 +309,13 @@ try {
   // Server
   // =========================================================================
   var server = net.createServer(function (socket) {
+    if (_serverShutdown) { try { socket.destroy(); } catch(e) {} return; }
     socket.setNoDelay(true);
+    _conns.push(socket);
+    socket.on('close', function() {
+      var idx = _conns.indexOf(socket);
+      if (idx >= 0) _conns.splice(idx, 1);
+    });
     var framer;
     framer = makeFramer(socket, function (msg) {
       modFramer = framer;
@@ -263,17 +339,17 @@ try {
     socket.on('error', function () {});
   });
 
+  // Create the global object first, then listen callback updates status in-place
+  globalThis[_gk] = { __positron_status: 'pending', port: 0 };
+
   server.on('error', function (e) {
-    globalThis.__positron_v2 = {
-      status: 'error',
-      message: 'listen failed: ' + ((e && e.message) || String(e))
-    };
+    globalThis[_gk].__positron_status = 'error';
+    globalThis[_gk].message = 'listen failed: ' + ((e && e.message) || String(e));
   });
   server.listen(PORT, '127.0.0.1', function () {
-    globalThis.__positron_v2 = { status: 'ready', port: PORT };
+    globalThis[_gk].__positron_status = 'ready';
+    globalThis[_gk].port = PORT;
   });
-  // Expose helpers so the REPL's .mod commands can call them via eval
-  // without reconstructing the api or require chain.
   function loadModuleFromCode(code) {
     var exports = indirectEval(code);
     if (!exports || typeof exports !== 'object' || !exports.name)
@@ -312,16 +388,32 @@ try {
     return loadModuleFromCode(code);
   }
 
-  globalThis.__positron_v2_internal = {
+  function listLoadedModules() {
+    return Object.keys(modules);
+  }
+
+  var _conns = []; // track all connected sockets
+
+  var _serverShutdown = false;
+  function shutdownServer() {
+    _serverShutdown = true;
+    // Don't touch the server object at all — just reject new connections
+    // at the application level. The port stays open but idle.
+    return { shutdown: true };
+  }
+
+  globalThis[_gk].i = {
     server: server, modules: modules,
     loadModule: loadModuleFromCode,
     loadModuleFromFile: loadModuleFromFile,
-    unloadModule: unloadModuleByName
+    unloadModule: unloadModuleByName,
+    listModules: listLoadedModules,
+    shutdown: shutdownServer
   };
 
 } catch (e) {
-  globalThis.__positron_v2 = {
-    status: 'error',
+  globalThis[_gk] = {
+    __positron_status: 'error',
     message: (e && e.message) ? String(e.message) : String(e),
     stack:   (e && e.stack)   ? String(e.stack)   : ''
   };

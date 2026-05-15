@@ -17,84 +17,108 @@ namespace {
 
 #if defined(_M_X64)
 
-// Layout the trampoline reads. Matches the offsets the shellcode loads.
 struct TeardownData {
-    void*    base;            // [+0]   payload image base
-    void*    kSleep;          // [+8]   kernel32!Sleep
-    void*    kVirtualFree;    // [+16]  kernel32!VirtualFree
-    void*    kExitThread;     // [+24]  kernel32!ExitThread
-    uint64_t delay_ms;        // [+32]  Sleep(delay_ms)
+    void*    base;              // [+0]
+    void*    kSleep;            // [+8]
+    void*    kVirtualFree;      // [+16]
+    void*    kExitThread;       // [+24]
+    uint64_t delay_ms;          // [+32]
+    void*    scratch_base;      // [+40]  address of the scratch page itself
+    void*    kVirtualProtect;   // [+48]  kernel32!VirtualProtect
 };
 
-// x64 trampoline. Receives TeardownData* in RCX (Win64 first arg).
-//
-//   sub rsp, 0x28               ; align stack + shadow space
-//   mov rbx, rcx                ; preserve TeardownData* in rbx
-//   mov ecx, [rbx+32]           ; delay_ms
-//   mov rax, [rbx+8]            ; Sleep
+// x64 trampoline:
+//   sub rsp, 0x38              ; shadow + align + space for VirtualProtect &oldProt
+//   mov rbx, rcx               ; save TeardownData*
+//   mov ecx, [rbx+32]          ; Sleep(delay_ms)
+//   mov rax, [rbx+8]
 //   call rax
-//   mov rcx, [rbx+0]            ; base
-//   xor edx, edx                ; size = 0
-//   mov r8d, 0x8000             ; MEM_RELEASE
-//   mov rax, [rbx+16]           ; VirtualFree
+//   mov rcx, [rbx+0]           ; VirtualFree(payload_base, 0, MEM_RELEASE)
+//   xor edx, edx
+//   mov r8d, 0x8000
+//   mov rax, [rbx+16]
 //   call rax
-//   xor ecx, ecx                ; ExitThread(0)
-//   mov rax, [rbx+24]           ; ExitThread
+//   mov rcx, [rbx+40]          ; VirtualProtect(scratch, 0x1000, PAGE_READONLY=2, &old)
+//   mov edx, 0x1000
+//   mov r8d, 2
+//   lea r9, [rsp+0x30]         ; &oldProt on stack
+//   mov rax, [rbx+48]
 //   call rax
-//   ud2                         ; never reached
+//   xor ecx, ecx               ; ExitThread(0)
+//   mov rax, [rbx+24]
+//   call rax
+//   ud2
 constexpr uint8_t kTrampoline[] = {
-    0x48, 0x83, 0xEC, 0x28,
-    0x48, 0x89, 0xCB,
-    0x8B, 0x4B, 0x20,
-    0x48, 0x8B, 0x43, 0x08,
-    0xFF, 0xD0,
-    0x48, 0x8B, 0x0B,
-    0x31, 0xD2,
-    0x41, 0xB8, 0x00, 0x80, 0x00, 0x00,
-    0x48, 0x8B, 0x43, 0x10,
-    0xFF, 0xD0,
-    0x31, 0xC9,
-    0x48, 0x8B, 0x43, 0x18,
-    0xFF, 0xD0,
-    0x0F, 0x0B,
+    0x48, 0x83, 0xEC, 0x38,         // sub rsp, 0x38
+    0x48, 0x89, 0xCB,               // mov rbx, rcx
+    0x8B, 0x4B, 0x20,               // mov ecx, [rbx+32]
+    0x48, 0x8B, 0x43, 0x08,         // mov rax, [rbx+8]
+    0xFF, 0xD0,                     // call rax (Sleep)
+    0x48, 0x8B, 0x0B,               // mov rcx, [rbx]
+    0x31, 0xD2,                     // xor edx, edx
+    0x41, 0xB8, 0x00, 0x80, 0x00, 0x00, // mov r8d, 0x8000
+    0x48, 0x8B, 0x43, 0x10,         // mov rax, [rbx+16]
+    0xFF, 0xD0,                     // call rax (VirtualFree payload)
+    0x48, 0x8B, 0x4B, 0x28,         // mov rcx, [rbx+40] (scratch_base)
+    0xBA, 0x00, 0x10, 0x00, 0x00,   // mov edx, 0x1000
+    0x41, 0xB8, 0x02, 0x00, 0x00, 0x00, // mov r8d, 2 (PAGE_READONLY)
+    0x4C, 0x8D, 0x4C, 0x24, 0x30,  // lea r9, [rsp+0x30]
+    0x48, 0x8B, 0x43, 0x30,         // mov rax, [rbx+48] (VirtualProtect)
+    0xFF, 0xD0,                     // call rax
+    0x31, 0xC9,                     // xor ecx, ecx
+    0x48, 0x8B, 0x43, 0x18,         // mov rax, [rbx+24]
+    0xFF, 0xD0,                     // call rax (ExitThread)
+    0x0F, 0x0B,                     // ud2
 };
 
 #elif defined(_M_IX86)
 
 struct TeardownData {
-    void*    base;            // [+0]
-    void*    kSleep;          // [+4]
-    void*    kVirtualFree;    // [+8]
-    void*    kExitThread;     // [+12]
-    uint32_t delay_ms;        // [+16]
+    void*    base;              // [+0]
+    void*    kSleep;            // [+4]
+    void*    kVirtualFree;      // [+8]
+    void*    kExitThread;       // [+12]
+    uint32_t delay_ms;          // [+16]
+    void*    scratch_base;      // [+20]
+    void*    kVirtualProtect;   // [+24]
 };
 
-// x86 trampoline. Receives TeardownData* on the stack at [esp+4]
-// (CreateThread's lpParameter -> stdcall first arg).
-//
+// x86 trampoline:
 //   push esi
-//   mov esi, [esp+8]            ; param (after push esi)
-//   push [esi+16]               ; delay_ms
-//   call [esi+4]                ; Sleep
-//   push 0x8000                 ; MEM_RELEASE
-//   push 0                      ; size
-//   push [esi+0]                ; base
-//   call [esi+8]                ; VirtualFree
-//   push 0                      ; ExitThread(0)
-//   call [esi+12]               ; ExitThread
+//   mov esi, [esp+8]
+//   push [esi+16]        ; Sleep(delay_ms)
+//   call [esi+4]
+//   push 0x8000           ; VirtualFree(base, 0, MEM_RELEASE)
+//   push 0
+//   push [esi]
+//   call [esi+8]
+//   lea eax, [esp]        ; &oldProt (reuse stack)
+//   push eax              ; lpflOldProtect
+//   push 2                ; PAGE_READONLY
+//   push 0x1000           ; size
+//   push [esi+20]         ; scratch_base
+//   call [esi+24]         ; VirtualProtect
+//   push 0                ; ExitThread(0)
+//   call [esi+12]
 //   ud2
 constexpr uint8_t kTrampoline[] = {
-    0x56,
-    0x8B, 0x74, 0x24, 0x08,
-    0xFF, 0x76, 0x10,
-    0xFF, 0x56, 0x04,
-    0x68, 0x00, 0x80, 0x00, 0x00,
-    0x6A, 0x00,
-    0xFF, 0x36,
-    0xFF, 0x56, 0x08,
-    0x6A, 0x00,
-    0xFF, 0x56, 0x0C,
-    0x0F, 0x0B,
+    0x56,                           // push esi
+    0x8B, 0x74, 0x24, 0x08,         // mov esi, [esp+8]
+    0xFF, 0x76, 0x10,               // push [esi+16]
+    0xFF, 0x56, 0x04,               // call [esi+4] (Sleep)
+    0x68, 0x00, 0x80, 0x00, 0x00,   // push 0x8000
+    0x6A, 0x00,                     // push 0
+    0xFF, 0x36,                     // push [esi]
+    0xFF, 0x56, 0x08,               // call [esi+8] (VirtualFree payload)
+    0x8D, 0x04, 0x24,               // lea eax, [esp]
+    0x50,                           // push eax (&oldProt)
+    0x6A, 0x02,                     // push 2 (PAGE_READONLY)
+    0x68, 0x00, 0x10, 0x00, 0x00,   // push 0x1000
+    0xFF, 0x76, 0x14,               // push [esi+20] (scratch_base)
+    0xFF, 0x56, 0x18,               // call [esi+24] (VirtualProtect)
+    0x6A, 0x00,                     // push 0
+    0xFF, 0x56, 0x0C,               // call [esi+12] (ExitThread)
+    0x0F, 0x0B,                     // ud2
 };
 
 #else
@@ -150,10 +174,11 @@ bool schedule_unmap(uint32_t delay_ms) {
     //    our (about-to-vanish) IAT.
     HMODULE k32 = ::GetModuleHandleW(L"kernel32.dll");
     if (!k32) { log::error("teardown: kernel32 GetModuleHandle failed"); return false; }
-    auto pSleep        = reinterpret_cast<void*>(::GetProcAddress(k32, "Sleep"));
-    auto pVirtualFree  = reinterpret_cast<void*>(::GetProcAddress(k32, "VirtualFree"));
-    auto pExitThread   = reinterpret_cast<void*>(::GetProcAddress(k32, "ExitThread"));
-    if (!pSleep || !pVirtualFree || !pExitThread) {
+    auto pSleep          = reinterpret_cast<void*>(::GetProcAddress(k32, "Sleep"));
+    auto pVirtualFree    = reinterpret_cast<void*>(::GetProcAddress(k32, "VirtualFree"));
+    auto pExitThread     = reinterpret_cast<void*>(::GetProcAddress(k32, "ExitThread"));
+    auto pVirtualProtect = reinterpret_cast<void*>(::GetProcAddress(k32, "VirtualProtect"));
+    if (!pSleep || !pVirtualFree || !pExitThread || !pVirtualProtect) {
         log::error("teardown: kernel32 GetProcAddress failed");
         return false;
     }
@@ -171,15 +196,13 @@ bool schedule_unmap(uint32_t delay_ms) {
 
     std::memcpy(code, kTrampoline, sizeof(kTrampoline));
 
-    data->base         = static_cast<void*>(&__ImageBase);
-    data->kSleep       = pSleep;
-    data->kVirtualFree = pVirtualFree;
-    data->kExitThread  = pExitThread;
-#if defined(_M_X64)
-    data->delay_ms     = delay_ms;
-#else
-    data->delay_ms     = delay_ms;
-#endif
+    data->base            = static_cast<void*>(&__ImageBase);
+    data->kSleep          = pSleep;
+    data->kVirtualFree    = pVirtualFree;
+    data->kExitThread     = pExitThread;
+    data->delay_ms        = delay_ms;
+    data->scratch_base    = scratch;
+    data->kVirtualProtect = pVirtualProtect;
 
     // CPU may have cached our recent writes; flush so the new thread sees
     // executable code rather than stale (we just allocated, so unlikely

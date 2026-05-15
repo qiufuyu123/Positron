@@ -119,7 +119,7 @@ unsigned __stdcall init_thread_main(void*) {
                     using clock = std::chrono::steady_clock;
                     auto deadline = clock::now() + std::chrono::seconds(5);
                     const std::string check_js =
-                        "(function(){var s=globalThis.__positron_v2;return s||null;})()";
+                        "(function(){for(var k in globalThis){if(k[0]==='_'&&globalThis[k]&&globalThis[k].__positron_status)return globalThis[k]}return null;})()";
                     while (clock::now() < deadline) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(150));
                         std::promise<v8b::V8Bridge::EvalOutcome> prom;
@@ -135,7 +135,7 @@ unsigned __stdcall init_thread_main(void*) {
                         if (o.json_value.empty() || o.json_value == "null") continue;
                         try {
                             auto j = nlohmann::json::parse(o.json_value);
-                            auto status = j.value("status", std::string{});
+                            auto status = j.value("__positron_status", std::string{});
                             if (status == "ready") {
                                 int port = j.value("port", 0);
                                 ipc::Server::instance().push(wire::Json{

@@ -153,7 +153,7 @@ positron/
   shared/wire/    长度前缀 JSON 帧协议
   examples/       SDK 使用示例、JS 模块（demo、hello）
   tests/          集成测试 + 单元测试
-  third_party/    BlackBone, nlohmann/json, replxx, CLI11, MinHook
+  third_party/    依赖库（git submodule，见下方许可声明）
 ```
 
 ### 自卸载流程
@@ -174,6 +174,28 @@ positron::sdk::Session s;
 s.attach(pid);               // 默认 v2 传输
 auto r = s.eval("1+1");     // r.json_value == "2"
 s.detach();
+```
+
+## 第三方依赖
+
+所有依赖以 git submodule 形式包含在 `third_party/` 下。
+
+| 库 | 许可 | 说明 |
+|---|---|---|
+| [BlackBone](https://github.com/DarthTon/Blackbone) | MIT | 手动 DLL 映射 |
+| [MinHook](https://github.com/TsudaKageyu/minhook) | BSD-2-Clause | x64/x86 inline hook 引擎 |
+| [nlohmann/json](https://github.com/nlohmann/json) | MIT | C++ JSON 库 |
+| [CLI11](https://github.com/CLIUtils/CLI11) | BSD-3-Clause | 命令行解析 |
+| [replxx](https://github.com/AmokHuginnsson/replxx) | BSD-3-Clause | 交互式 REPL 行编辑 |
+| [doctest](https://github.com/doctest/doctest) | MIT | C++ 测试框架 |
+
+克隆后初始化 submodule 并应用补丁：
+```bash
+git submodule update --init --recursive
+# 应用本地补丁（BlackBone 工具集 + API getter）
+cd third_party/Blackbone && git apply ../../patches/blackbone.patch && cd ../..
+# 或 Windows PowerShell：
+powershell -File patches/apply.ps1
 ```
 
 ## 许可
