@@ -23,26 +23,23 @@ if(MSVC)
     else()
         set(DIA_LIB_SUBDIR "")
     endif()
-    # VS_INSTALL_DIR is set by the VS generator; fall back to $ENV{VSINSTALLDIR}
-    # when generating outside a VS prompt.
-    set(_dia_root "$ENV{VSINSTALLDIR}DIA SDK")
-    if(NOT EXISTS "${_dia_root}/include/dia2.h")
-        # Probe common locations + the compiler's own install dir.
-        get_filename_component(_cl_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-        get_filename_component(_vs_root "${_cl_dir}/../../../../../../.." ABSOLUTE)
-        set(_dia_probes
-            "${_vs_root}/DIA SDK"
-            "C:/Program Files/Microsoft Visual Studio/2022/Community/DIA SDK"
-            "C:/Program Files/Microsoft Visual Studio/2022/Professional/DIA SDK"
-            "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/DIA SDK"
-            "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/DIA SDK"
-        )
-        foreach(_p ${_dia_probes})
-            if(EXISTS "${_p}/include/dia2.h")
-                set(_dia_root "${_p}")
-                break()
-            endif()
-        endforeach()
+    # Find the DIA SDK by walking up from the compiler path.
+    # cl.exe lives at <VS>/VC/Tools/MSVC/<ver>/bin/Host<arch>/<arch>/cl.exe
+    # DIA SDK lives at <VS>/DIA SDK/
+    set(_dia_root "")
+    get_filename_component(_cl_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    # Walk up until we find "DIA SDK" as a sibling
+    set(_cur "${_cl_dir}")
+    foreach(_ RANGE 10)
+        if(EXISTS "${_cur}/DIA SDK/include/dia2.h")
+            set(_dia_root "${_cur}/DIA SDK")
+            break()
+        endif()
+        get_filename_component(_cur "${_cur}/.." ABSOLUTE)
+    endforeach()
+    # Fallback: VSINSTALLDIR env
+    if(NOT _dia_root AND EXISTS "$ENV{VSINSTALLDIR}DIA SDK/include/dia2.h")
+        set(_dia_root "$ENV{VSINSTALLDIR}DIA SDK")
     endif()
     if(EXISTS "${_dia_root}/include/dia2.h")
         message(STATUS "BlackBone DIA SDK: ${_dia_root}")
