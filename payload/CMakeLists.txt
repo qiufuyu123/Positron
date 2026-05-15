@@ -18,7 +18,7 @@ target_include_directories(payload PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/shared
-    ${CMAKE_SOURCE_DIR}/third_party
+    ${CMAKE_SOURCE_DIR}/third_party/nlohmann/single_include
 )
 
 target_compile_definitions(payload PRIVATE

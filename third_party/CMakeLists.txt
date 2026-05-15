@@ -27,9 +27,17 @@ if(MSVC)
     # when generating outside a VS prompt.
     set(_dia_root "$ENV{VSINSTALLDIR}DIA SDK")
     if(NOT EXISTS "${_dia_root}/include/dia2.h")
-        # Probe common Community/Pro/Enterprise locations.
-        foreach(_ed Community Professional Enterprise BuildTools)
-            set(_p "C:/Program Files/Microsoft Visual Studio/2022/${_ed}/DIA SDK")
+        # Probe common locations + the compiler's own install dir.
+        get_filename_component(_cl_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        get_filename_component(_vs_root "${_cl_dir}/../../../../../../.." ABSOLUTE)
+        set(_dia_probes
+            "${_vs_root}/DIA SDK"
+            "C:/Program Files/Microsoft Visual Studio/2022/Community/DIA SDK"
+            "C:/Program Files/Microsoft Visual Studio/2022/Professional/DIA SDK"
+            "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/DIA SDK"
+            "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/DIA SDK"
+        )
+        foreach(_p ${_dia_probes})
             if(EXISTS "${_p}/include/dia2.h")
                 set(_dia_root "${_p}")
                 break()

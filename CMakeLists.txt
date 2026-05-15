@@ -61,11 +61,11 @@ add_library(positron::project_options ALIAS positron_project_options)
 # Header-only third-party libs surfaced as INTERFACE targets so consumers can
 # just `target_link_libraries(... third_party::<name>)`.
 add_library(positron_cli11 INTERFACE)
-target_include_directories(positron_cli11 INTERFACE ${CMAKE_SOURCE_DIR}/third_party/cli11)
+target_include_directories(positron_cli11 INTERFACE ${CMAKE_SOURCE_DIR}/third_party/cli11/include)
 add_library(third_party::cli11 ALIAS positron_cli11)
 
 add_library(positron_nlohmann_json INTERFACE)
-target_include_directories(positron_nlohmann_json INTERFACE ${CMAKE_SOURCE_DIR}/third_party)
+target_include_directories(positron_nlohmann_json INTERFACE ${CMAKE_SOURCE_DIR}/third_party/nlohmann/single_include)
 add_library(third_party::nlohmann_json ALIAS positron_nlohmann_json)
 
 add_library(positron_doctest INTERFACE)
