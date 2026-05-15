@@ -48,12 +48,15 @@ jobs:
       - name: Collect artifacts
         shell: pwsh
         run: |
-          $src = "build-ci"
+          $platform = if ("${{ matrix.arch }}" -eq "Win32") { "Win32" } else { "x64" }
+          $src = "build\$platform\Release"
           $dest = "positron-${{ matrix.arch }}"
           New-Item -ItemType Directory -Force $dest
-          Get-ChildItem $src -Recurse -Include host.exe,payload.dll,positron_sdk.lib | ForEach-Object {
-            Copy-Item $_.FullName $dest\
-          }
+          Write-Host "Looking for artifacts in: $src"
+          Get-ChildItem $src -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
+          Copy-Item "$src\host.exe" $dest\
+          Copy-Item "$src\payload.dll" $dest\
+          Copy-Item "$src\positron_sdk.lib" $dest\
           Copy-Item "sdk\include" "$dest\include" -Recurse
           Copy-Item "sdk\bootstrap.js" $dest\
           if (Test-Path "sdk\types") { Copy-Item "sdk\types" "$dest\types" -Recurse }
