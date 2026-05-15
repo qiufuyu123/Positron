@@ -114,6 +114,31 @@ positron[pid]> .mod unload demo
 
 **模块 API**：`api.eval()`、`api.evalRenderer()`、`api.send()`、`api.log()`、`api.getElectron()`、`api.require`
 
+### Bunch（多文件打包器）
+
+复杂注入项目（多 TS 文件 + CSS + HTML 资源）使用 [Bunch](bunch.md)：
+
+```bash
+node tools/bunch/bunch.js create my_project   # 创建项目
+node tools/bunch/bunch.js build my_project    # 编译 + 打包
+```
+
+Bunch 在模块 API 基础上扩展了 VFS 虚拟文件系统、DOM 操作、自动清理定时器、localStorage 访问、截图等。详见 [bunch.md](bunch.md)。
+
+### 注入方式对比
+
+| | SDK eval | 模块 (.mod) | Bunch (.b.js) |
+|---|---|---|---|
+| **场景** | 单次脚本、快速测试 | 单文件插件，有生命周期 | 多文件项目，含资源文件 |
+| **文件** | 内联字符串或 .js | 单个 .js | TS + CSS + HTML + 资源 |
+| **TypeScript** | 不支持 | 不支持 | 支持（构建时编译） |
+| **生命周期** | 无 | `onLoad` / `onUnload` | `onLoad` / `onUnload` + 自动清理 |
+| **VFS** | 无 | 无 | 打包虚拟文件系统 |
+| **DOM 操作** | 手写 `evalRenderer` | 手写 `evalRenderer` | `api.dom.*`（setText、injectCSS、screenshot...） |
+| **定时器** | 手动管理 | `onUnload` 手动清理 | 卸载时自动清除 |
+| **存储** | 手动 | 手动 | `api.store.local.*` / `api.store.session.*` |
+| **加载命令** | `host.exe eval <pid> "..."` | `.mod load file.js` | `.mod load file.b.js` |
+
 ### 单次执行
 
 ```bash

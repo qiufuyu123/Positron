@@ -1,0 +1,12 @@
+#__bunch_demo {
+  position: fixed;
+  bottom: 10px;
+  right: 10px;
+  z-index: 99999;
+  padding: 8px 14px;
+  background: rgba(0,0,0,0.7);
+  color: #0f0;
+  font-family: monospace;
+  font-size: 12px;
+  border-radius: 6px;
+}

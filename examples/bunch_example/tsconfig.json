@@ -1,0 +1,13 @@
+{
+    "compilerOptions": {
+        "target": "ES2015",
+        "module": "none",
+        "strict": false,
+        "skipLibCheck": true,
+        "noEmit": true
+    },
+    "include": [
+        "*.ts",
+        "**/*.ts"
+    ]
+}

@@ -114,6 +114,31 @@ Modules have full lifecycle management:
 
 **Module API:** `api.eval()`, `api.evalRenderer()`, `api.send()`, `api.log()`, `api.getElectron()`, `api.require`
 
+### Bunch (Multi-file Bundler)
+
+For complex injection projects with multiple TS files, CSS, HTML resources — use [Bunch](docs/bunch.md):
+
+```bash
+node tools/bunch/bunch.js create my_project   # scaffold
+node tools/bunch/bunch.js build my_project    # compile + bundle
+```
+
+Bunch extends the module API with VFS, DOM helpers, auto-cleanup timers, localStorage access, and screenshot capture. See [docs/bunch.md](docs/bunch.md) for full documentation.
+
+### Injection Methods Comparison
+
+| | SDK eval | Module (.mod) | Bunch (.b.js) |
+|---|---|---|---|
+| **Use case** | One-shot scripts, quick testing | Single-file plugins with lifecycle | Multi-file projects with resources |
+| **Files** | Inline string or .js file | Single .js file | TS + CSS + HTML + assets |
+| **TypeScript** | No | No | Yes (compiled at build) |
+| **Lifecycle** | None | `onLoad` / `onUnload` | `onLoad` / `onUnload` + auto-cleanup |
+| **VFS** | N/A | N/A | Bundled virtual file system |
+| **DOM helpers** | Manual `evalRenderer` | Manual `evalRenderer` | `api.dom.*` (setText, injectCSS, screenshot...) |
+| **Timers** | Manual | Manual cleanup in `onUnload` | Auto-cleared on unload |
+| **Storage** | Manual | Manual | `api.store.local.*` / `api.store.session.*` |
+| **Load command** | `host.exe eval <pid> "..."` | `.mod load file.js` | `.mod load file.b.js` |
+
 ### One-shot Commands
 
 ```bash
